@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"izumi/internal/handler"
-	"izumi/model"
-	"izumi/scraper"
 	"maps"
 	"mime/multipart"
 	"net/http"
@@ -15,6 +12,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"izumi/internal/handler"
+	"izumi/model"
+	"izumi/scraper"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/dokidokikoi/go-common/gopool"
@@ -30,11 +31,13 @@ const (
 	DefaultHeader_Cookie = "GGBASESSESSIONID=83D39E9973F44502AFAE0E648A2EF263"
 )
 
-var GGBasesDomain = "https://ggbases.dlgal.com/"
-var GGBasesSearchUri = "https://ggbases.dlgal.com/search.so?p=%d&title=%s&advanced=0"
-var GGBasesMagnetUri = "https://ggb.dlgal.com/magnet.so?id=%s"
-var GGBasesBtUri = "https://ggbases.dlgal.com/down.so?id=%s"
-var GGBasesDetailUri = "https://ggbases.dlgal.com/viewDetail.so"
+var (
+	GGBasesDomain    = "https://ggbases.dlgal.com/"
+	GGBasesSearchUri = "https://ggbases.dlgal.com/search.so?p=%d&title=%s&advanced=0"
+	GGBasesMagnetUri = "https://ggb.dlgal.com/magnet.so?id=%s"
+	GGBasesBtUri     = "https://ggbases.dlgal.com/down.so?id=%s"
+	GGBasesDetailUri = "https://ggbases.dlgal.com/viewDetail.so"
+)
 
 type GGBases struct {
 	sync.RWMutex
@@ -150,7 +153,7 @@ func (gg *GGBases) GetGameItem(uri string) (*scraper.GameItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	item := &scraper.GameItem{GameVo: handler.GameVo{Links: []model.Link{{Name: gg.name, Url: uri, Type: model.LinkTypeInfo}}}, ScraperName: gg.name}
+	item := &scraper.GameItem{GameVo: handler.GameVo{Links: []model.Link{{Name: gg.name, Url: uri, Type: model.LinkTypeSource}}}, ScraperName: gg.name}
 	root, err := goquery.NewDocumentFromReader(bytes.NewBuffer(data))
 	if err != nil {
 		return nil, err
@@ -332,7 +335,6 @@ func (gg *GGBases) GetItemLink(node *goquery.Document, id string) ([]model.Link,
 				}
 			})
 		}
-
 	})
 
 	payload := &bytes.Buffer{}
@@ -347,7 +349,6 @@ func (gg *GGBases) GetItemLink(node *goquery.Document, id string) ([]model.Link,
 		"Content-Type": writer.FormDataContentType(),
 		"Referer":      fmt.Sprintf("https://ggbases.dlgal.com/view.so?id=%s", id),
 	}, payload)
-
 	if err != nil {
 		return links, err
 	}

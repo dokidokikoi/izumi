@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"izumi/internal/handler"
-	"izumi/model"
-	"izumi/scraper"
 	"maps"
 	"net/http"
 	"net/url"
@@ -15,6 +12,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"izumi/internal/handler"
+	"izumi/model"
+	"izumi/scraper"
 
 	"github.com/PuerkitoBio/goquery"
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
@@ -158,7 +159,7 @@ func (ds *DlSite) GetGameItem(uri string) (*scraper.GameItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	item := &scraper.GameItem{GameVo: handler.GameVo{Links: []model.Link{{Name: Name, Url: uri, Type: model.LinkTypeInfo}}}, ScraperName: ds.name}
+	item := &scraper.GameItem{GameVo: handler.GameVo{Links: []model.Link{{Name: Name, Url: uri, Type: model.LinkTypeSource}}}, ScraperName: ds.name}
 
 	id := ""
 	arr := strings.Split(uri, "/")

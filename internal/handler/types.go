@@ -1,9 +1,10 @@
 package handler
 
 import (
-	"izumi/model"
 	"strings"
 	"time"
+
+	"izumi/model"
 )
 
 type GameListReq struct {
@@ -35,29 +36,29 @@ type GameInlineVo struct {
 }
 
 type GameVo struct {
-	ID            uint                `json:"id"`
-	RelIDs        []string            `json:"rel_ids"`
-	JanCode       string              `json:"jan_code"`
-	DlCode        string              `json:"dl_code"`
-	Name          string              `json:"name"`
-	Alias         []string            `json:"alias"`
-	Cover         string              `json:"cover"`
-	Images        []string            `json:"images"`
-	Category      *model.Category     `json:"category"`
-	Series        []*model.Series     `json:"series"`
-	Brands        []*model.Brand      `json:"brands"`
-	Price         string              `json:"price"`
-	IssueDate     time.Time           `json:"issue_date"`
-	Story         string              `json:"story"`
-	Platform      string              `json:"platform"`
-	Tags          []*model.Tag        `json:"tags"`
-	Characters    []CharacterVo       `json:"characters"`
-	Links         []model.Link        `json:"links"`
-	OtherInfo     string              `json:"other_info"`
-	Staff         []StaffVo           `json:"staff"`
-	CreatedAt     time.Time           `json:"created_at"`
-	UpdatedAt     time.Time           `json:"updated_at"`
-	DownloadInfos model.DownloadInfos `json:"download_info"`
+	ID            uint                 `json:"id"`
+	RelIDs        []string             `json:"rel_ids"`
+	JanCode       string               `json:"jan_code"`
+	DlCode        string               `json:"dl_code"`
+	Name          string               `json:"name"`
+	Alias         []string             `json:"alias"`
+	Cover         string               `json:"cover"`
+	Images        []string             `json:"images"`
+	Category      *model.Category      `json:"category"`
+	Series        []*model.Series      `json:"series"`
+	Brands        []*model.Brand       `json:"brands"`
+	Price         string               `json:"price"`
+	IssueDate     time.Time            `json:"issue_date"`
+	Story         string               `json:"story"`
+	Platform      string               `json:"platform"`
+	Tags          []*model.Tag         `json:"tags"`
+	Characters    []CharacterVo        `json:"characters"`
+	Links         []model.Link         `json:"links"`
+	OtherInfo     string               `json:"other_info"`
+	Staff         []StaffVo            `json:"staff"`
+	CreatedAt     time.Time            `json:"created_at"`
+	UpdatedAt     time.Time            `json:"updated_at"`
+	DownloadInfos []model.DownloadInfo `json:"download_info"`
 
 	// 仅用于 info 文件
 	Version  string      `json:"version,omitempty"`

@@ -3,10 +3,11 @@ package utils
 import (
 	"bytes"
 	"io"
-	"izumi/config"
 	"net/url"
 	"path/filepath"
 	"sync"
+
+	"izumi/config"
 
 	"github.com/pkg/errors"
 
@@ -26,7 +27,6 @@ func SaveBunchTmpFile(fn func(uri string) ([]byte, error), urls []string) map[st
 	var lock sync.Mutex
 	wait := sync.WaitGroup{}
 	for _, uri := range urls {
-		uri := uri
 		wait.Add(1)
 		gopool.Go(func() {
 			defer wait.Done()

@@ -3,11 +3,12 @@ package twodfan_test
 import (
 	"bytes"
 	"fmt"
-	"izumi/config"
-	"izumi/scraper/twodfan"
 	"net/http"
 	"os"
 	"testing"
+
+	"izumi/config"
+	"izumi/scraper/twodfan"
 
 	"github.com/PuerkitoBio/goquery"
 	"resty.dev/v3"
@@ -215,12 +216,14 @@ func TestTwoDFan_GetItemStaff(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		fmt.Printf("%+v\n", staff)
+		for _, s := range staff {
+			fmt.Printf("%+v\n", s)
+		}
 	}
 }
 
 func TestTwoDFan_GetItemStory(t *testing.T) {
-	items, err := twoDFanScraper.SearchGame("ボクの彼女はガテン系", 1)
+	items, err := twoDFanScraper.SearchGame("素晴らしき日々", 1)
 	if err != nil {
 		panic(err)
 	}
@@ -265,7 +268,7 @@ func TestTwoDFan_GetItemBrand(t *testing.T) {
 }
 
 func TestReq(t *testing.T) {
-	data, err := twoDFanScraper.DoReq(http.MethodGet, "https://2dfan.com/subjects/2020", nil, nil)
+	data, err := twoDFanScraper.DoReq(http.MethodGet, "https://img.achost.top/uploads/subjects/packages/normal_0adbfc18d11dad61b73efc68a8cd68b9.jpg", nil, nil)
 	if err != nil {
 		panic(err)
 	}

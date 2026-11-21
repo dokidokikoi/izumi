@@ -3,11 +3,6 @@ package twodfan
 import (
 	"bytes"
 	"fmt"
-	"izumi/config"
-	"izumi/internal/handler"
-	"izumi/model"
-	"izumi/scraper"
-	"izumi/utils"
 	"maps"
 	"net/http"
 	"net/url"
@@ -17,16 +12,24 @@ import (
 	"sync"
 	"time"
 
+	"izumi/config"
+	"izumi/internal/handler"
+	"izumi/model"
+	"izumi/scraper"
+	"izumi/utils"
+
 	"github.com/PuerkitoBio/goquery"
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
 	"github.com/dokidokikoi/go-common/tools"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 const Name = "2dfan"
 
 const (
-	DefaultHeader_Cookie = "_ga=GA1.1.274316804.1751095279; _ga_RF77TZ6QMN=GS2.1.s1751095279$o1$g1$t1751095328$j11$l0$h0; _project_hgc_session=ZnlS6F05146BhfkKsXHOEt3ewMCtzyUjnWY1VZM34Ix31OLzodQDGw2i%2FXIEZJER95WXODpVHKxgiOgruCz2YyVRDqzSPpSVSg7yZIIZiTvKZ3KMaFYeU833GjlKT92JH2%2BrOumlx81gmVZh3eHK3Xl94SwBPeac24%2BfLQKiPgoGJ661KGACNvGX3uAKRhdrJwrsKIaXO4f9w%2BKvtHYOBJHfBTtum10e3nRqTgc%2BtNdfxyDTVb80T%2B0S8G1hrZ%2F%2FyP4PtTUpPLxlb9XS4XBfvDv8jnLMeY94BY%2BiYRcL5MxFQMVqsI0%2FoTBBXJHtaTik7BwV54qFfFCudJ1gAAzT1YtfFxO6SARFusy1aHk%2FWh2zlBegAl3J7Jf3S5M%3D--SFuz5Ln45ktVvec7--hR4VT3NvYGEcup6dWqvRpQ%3D%3D"
+	DefaultHeader_Cookie = ""
 )
 
 var (
@@ -97,13 +100,13 @@ func (tdf *TwoDFan) SearchGame(keyword string, page int) ([]*scraper.SearchItem,
 
 	var images []string
 	var items []*scraper.SearchItem
-	root.Find("ul.intro-list li.media").Each(func(i int, s *goquery.Selection) {
-		url := s.Find("img.subject-package").AttrOr("data-normal", "")
+	root.Find("#subject-list div.subject-card").Each(func(i int, s *goquery.Selection) {
+		url := s.Find("div.subject-card-cover img").AttrOr("src", "")
 		images = append(images, url)
 		items = append(items, &scraper.SearchItem{
-			Name:        s.Find("#content h4.media-heading a").Text(),
+			Name:        s.Find("h3.subject-card-title a").Text(),
 			Key:         "",
-			URl:         tdf.AbsUrl(s.Find("h4.media-heading a").AttrOr("href", "")),
+			URl:         tdf.AbsUrl(s.Find("h3.subject-card-title a").AttrOr("href", "")),
 			Summary:     "",
 			Cover:       url,
 			ScraperName: tdf.name,
@@ -111,8 +114,7 @@ func (tdf *TwoDFan) SearchGame(keyword string, page int) ([]*scraper.SearchItem,
 	})
 
 	m := utils.SaveBunchTmpFile(func(url string) ([]byte, error) {
-		return tdf.DoReq(http.MethodGet, url, nil, nil)
-
+		return tdf.DoReq(http.MethodGet, url, map[string]string{"referer": tdf.Domain}, nil)
 	}, images)
 	for _, item := range items {
 		item.Cover = m[item.Cover]
@@ -148,7 +150,7 @@ func (tdf *TwoDFan) GetGameItem(uri string) (*scraper.GameItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	item := &scraper.GameItem{GameVo: handler.GameVo{Links: []model.Link{{Name: tdf.name, Url: uri, Type: model.LinkTypeInfo}}}, ScraperName: tdf.name}
+	item := &scraper.GameItem{GameVo: handler.GameVo{Links: []model.Link{{Name: tdf.name, Url: uri, Type: model.LinkTypeSource}}}, ScraperName: tdf.name}
 	u, err := url.Parse(uri)
 	if err == nil {
 		arr := strings.Split(u.Path, "/")
@@ -217,29 +219,17 @@ func (tdf *TwoDFan) GetItemName(node *goquery.Document) (string, []string, error
 			alias = append(alias, strings.Split(s.Find("span").Text(), "/")...)
 		}
 	})
-	return node.Find("#content div.navbar h3").First().Text(), alias, nil
+	alias = strings.Split(node.Find("p.subject-aka").First().Text(), " / ")
+	return node.Find("h1.subject-title").First().Text(), alias, nil
 }
 
 func (tdf *TwoDFan) GetItemCover(node *goquery.Document) (string, []string, error) {
-	url := node.Find("#package-image img.subject-package").First().AttrOr("src", "")
-	images := []string{}
-	if url != "" {
-		data, err := tdf.DoReq(http.MethodGet, url, map[string]string{"Referer": tdf.Domain}, nil)
-		if err != nil {
-			tdf.logger.Error("fetch iamge error", zap.String("url", url), zap.Error(err))
-		} else {
-			path, err := utils.SaveTmpFile(filepath.Ext(url), bytes.NewBuffer(data))
-			if err != nil {
-				tdf.logger.Error("fetch iamge error", zap.String("url", url), zap.Error(err))
-			} else {
-				images = append(images, path)
-			}
-		}
-	}
-	if len(images) < 1 {
-		return "", nil, nil
-	}
-	return images[0], images[1:], nil
+	data := node.Find("div.subject-info-main div.subject-cover").First().AttrOr("data-props", "")
+	image := gjson.Get(data, "src").String()
+	imageMap := utils.SaveBunchTmpFile(func(uri string) ([]byte, error) {
+		return tdf.DoReq(http.MethodGet, uri, nil, nil)
+	}, []string{image})
+	return imageMap[image], nil, nil
 }
 
 func (tdf *TwoDFan) GetItemCategory(node *goquery.Document) (*model.Category, error) {
@@ -247,9 +237,17 @@ func (tdf *TwoDFan) GetItemCategory(node *goquery.Document) (*model.Category, er
 }
 
 func (tdf *TwoDFan) GetItemBrands(node *goquery.Document) ([]*model.Brand, error) {
-	return []*model.Brand{
-		{Name: node.Find("#content div.control-group p.tags").First().Find("a").Text()},
-	}, nil
+	brands := []*model.Brand{}
+	node.Find("div.subject-meta div.meta-row").Each(func(i int, s *goquery.Selection) {
+		if strings.Contains(s.Find("dt").Text(), "品牌") {
+			s.Find("a").Each(func(i int, s *goquery.Selection) {
+				brands = append(brands, &model.Brand{
+					Name: s.Text(),
+				})
+			})
+		}
+	})
+	return brands, nil
 }
 
 func (tdf *TwoDFan) GetItemPrice(node *goquery.Document) (string, error) {
@@ -257,12 +255,7 @@ func (tdf *TwoDFan) GetItemPrice(node *goquery.Document) (string, error) {
 }
 
 func (tdf *TwoDFan) GetItemStory(node *goquery.Document) (string, []string, error) {
-	url := ""
-	node.Find("#resources span").Each(func(i int, s *goquery.Selection) {
-		if strings.Contains(s.Text(), "介绍") {
-			url = s.Find("a").AttrOr("href", "")
-		}
-	})
+	url := node.Find("main.nexus-main a.view-more-link").First().AttrOr("href", "")
 	if url == "" {
 		return "", nil, nil
 	}
@@ -278,16 +271,22 @@ func (tdf *TwoDFan) GetItemStory(node *goquery.Document) (string, []string, erro
 	}
 
 	maxPage := 0
-	href := root.Find("#content-pagination div.pagination ul li").Last().Find("a").AttrOr("href", "")
-	hrefArr := strings.Split(href, "/")
-	if len(hrefArr) > 2 && hrefArr[len(hrefArr)-2] == "page" {
-		maxPage, _ = strconv.Atoi(hrefArr[len(hrefArr)-1])
+	href := root.Find("div.topic-content-pagination a.nexus-pagination-last").First().AttrOr("href", "")
+	hrefArr := strings.Split(href, "?")
+	if len(hrefArr) > 1 {
+		querys := strings.Split(hrefArr[1], "&")
+		for _, query := range querys {
+			if strings.HasPrefix(query, "page") {
+				maxPage, _ = strconv.Atoi(strings.TrimPrefix(query, "page="))
+			}
+		}
 	}
+	maxPage = max(1, maxPage)
 
 	story := strings.Builder{}
 	var images []string
 	f := func(root *goquery.Document) {
-		root.Find("#topic-content img").Each(func(i int, s *goquery.Selection) {
+		root.Find("#topic-content-body img").Each(func(i int, s *goquery.Selection) {
 			imgUrl := s.AttrOr("src", "")
 			if imgUrl == "" {
 				return
@@ -296,24 +295,32 @@ func (tdf *TwoDFan) GetItemStory(node *goquery.Document) (string, []string, erro
 			images = append(images, imgUrl)
 		})
 
-		html, _ := root.Find("#topic-content").Html()
+		html, _ := root.Find("#topic-content-body").Html()
 		story.WriteString(html)
 		story.WriteByte('\n')
 	}
 
-	f(root)
-	for i := 2; i <= maxPage; i++ {
-		data, err := tdf.DoReq(http.MethodGet, tdf.AbsUrl(url+fmt.Sprintf("/page/%d", i)), nil, nil)
-		if err != nil {
-			return "", nil, err
-		}
+	g := errgroup.Group{}
+	g.SetLimit(1)
+	for i := 1; i <= maxPage; i++ {
+		g.Go(func() error {
+			data, err := tdf.DoReq(http.MethodGet, tdf.AbsUrl(url+fmt.Sprintf("?page=%d", i)), nil, nil)
+			if err != nil {
+				return err
+			}
 
-		root, err := goquery.NewDocumentFromReader(bytes.NewBuffer(data))
-		if err != nil {
-			return "", nil, err
-		}
+			root, err := goquery.NewDocumentFromReader(bytes.NewBuffer(data))
+			if err != nil {
+				return err
+			}
 
-		f(root)
+			f(root)
+			return nil
+		})
+	}
+	err = g.Wait()
+	if err != nil {
+		return "", nil, err
 	}
 
 	res := utils.SaveBunchTmpFile(func(url string) ([]byte, error) {
@@ -335,33 +342,24 @@ func (tdf *TwoDFan) GetItemSize(node *goquery.Document) (string, error) {
 }
 
 func (tdf *TwoDFan) GetItemLinks(node *goquery.Document) ([]model.Link, error) {
-	url := ""
 	var links []model.Link
-	node.Find("#sidebar div.row-fluid").Each(func(i int, s *goquery.Selection) {
-		if strings.Contains(s.Find("div.title").Text(), "相关帖子") {
-			url = s.Find("div.title small a").AttrOr("href", "")
+	node.Find("aside.nexus-right-sidebar section").Each(func(i int, s *goquery.Selection) {
+		title := s.Find("h3.sidebar-section-title").Text()
+		ty := model.LinkTypeOther
+		if strings.Contains(title, "攻略") {
+			ty = model.LinkTypeWorkThrough
 		}
-	})
-
-	if url == "" {
-		return nil, nil
-	}
-	data, err := tdf.DoReq(http.MethodGet, tdf.AbsUrl(url), nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	root, err := goquery.NewDocumentFromReader(bytes.NewBuffer(data))
-	if err != nil {
-		return nil, err
-	}
-
-	root.Find("div.block-content table tr").Each(func(i int, s *goquery.Selection) {
-		n := s.Find("td").Eq(1).Find("a")
-		links = append(links, model.Link{
-			Name: n.Text(),
-			Url:  tdf.AbsUrl(n.AttrOr("href", "")),
-			Type: model.LinkTypeOther,
+		s.Find("ul.related-list li").Each(func(i int, s *goquery.Selection) {
+			url := s.Find("a").AttrOr("href", "")
+			if url == "" {
+				return
+			}
+			name := s.Find("a span.related-link__key").Text()
+			links = append(links, model.Link{
+				Name: name,
+				Url:  tdf.AbsUrl(url),
+				Type: ty,
+			})
 		})
 	})
 
@@ -374,8 +372,8 @@ func (tdf *TwoDFan) GetItemCharacters(node *goquery.Document) ([]handler.Charact
 
 func (tdf *TwoDFan) GetItemIssueDate(node *goquery.Document) (time.Time, error) {
 	var t time.Time
-	node.Find("#content div.control-group p.tags").Each(func(i int, s *goquery.Selection) {
-		if strings.Contains(s.Text(), "发售日期") {
+	node.Find("div.subject-meta div.meta-row").Each(func(i int, s *goquery.Selection) {
+		if strings.Contains(s.Find("dt").Text(), "发售日期") {
 			t = tools.Str2Time(utils.DateExtarct(s.Text()))
 		}
 	})
@@ -384,14 +382,10 @@ func (tdf *TwoDFan) GetItemIssueDate(node *goquery.Document) (time.Time, error) 
 
 func (tdf *TwoDFan) GetItemTags(node *goquery.Document) ([]*model.Tag, error) {
 	var tags []*model.Tag
-	node.Find("#sidebar div.row-fluid").Each(func(i int, s *goquery.Selection) {
-		if strings.Contains(s.Find("div.title").Text(), "常用标签") {
-			s.Find("div.block-content a").Each(func(i int, s *goquery.Selection) {
-				tags = append(tags, &model.Tag{
-					Name: s.Text(),
-				})
-			})
-		}
+	node.Find("div.subject-meta div.subject-tags-inline a").Each(func(i int, s *goquery.Selection) {
+		tags = append(tags, &model.Tag{
+			Name: s.Text(),
+		})
 	})
 
 	return tags, nil
@@ -400,8 +394,8 @@ func (tdf *TwoDFan) GetItemTags(node *goquery.Document) ([]*model.Tag, error) {
 func (tdf *TwoDFan) GetItemStaff(node *goquery.Document) ([]handler.StaffVo, error) {
 	var staff []handler.StaffVo
 	staffMap := map[string]handler.StaffVo{}
-	node.Find("#content div.control-group p.tags").Each(func(i int, s *goquery.Selection) {
-		if strings.Contains(s.Text(), "原画") {
+	node.Find("div.subject-meta div.meta-row").Each(func(i int, s *goquery.Selection) {
+		if strings.Contains(s.Find("dt").Text(), "原画") {
 			s.Find("a").Each(func(i int, s *goquery.Selection) {
 				sta, ok := staffMap[s.Text()]
 				if ok {
@@ -414,7 +408,7 @@ func (tdf *TwoDFan) GetItemStaff(node *goquery.Document) ([]handler.StaffVo, err
 				}
 				staffMap[s.Text()] = sta
 			})
-		} else if strings.Contains(s.Text(), "剧本") {
+		} else if strings.Contains(s.Find("dt").Text(), "剧本") {
 			s.Find("a").Each(func(i int, s *goquery.Selection) {
 				sta, ok := staffMap[s.Text()]
 				if ok {
@@ -427,7 +421,8 @@ func (tdf *TwoDFan) GetItemStaff(node *goquery.Document) ([]handler.StaffVo, err
 				}
 				staffMap[s.Text()] = sta
 			})
-		} else if strings.Contains(s.Text(), "声优") {
+		} else if strings.Contains(s.Find("dt").Text(), "声优") {
+			fmt.Println("cv")
 			s.Find("a").Each(func(i int, s *goquery.Selection) {
 				sta, ok := staffMap[s.Text()]
 				if ok {
@@ -438,8 +433,9 @@ func (tdf *TwoDFan) GetItemStaff(node *goquery.Document) ([]handler.StaffVo, err
 						Relation: []model.PersonRelation{model.PRelationCV},
 					}
 				}
+				staffMap[s.Text()] = sta
 			})
-		} else if strings.Contains(s.Text(), "音乐") {
+		} else if strings.Contains(s.Find("dt").Text(), "音乐") {
 			s.Find("a").Each(func(i int, s *goquery.Selection) {
 				sta, ok := staffMap[s.Text()]
 				if ok {
@@ -450,6 +446,7 @@ func (tdf *TwoDFan) GetItemStaff(node *goquery.Document) ([]handler.StaffVo, err
 						Relation: []model.PersonRelation{model.PRelationMusic},
 					}
 				}
+				staffMap[s.Text()] = sta
 			})
 		}
 	})

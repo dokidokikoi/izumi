@@ -2,14 +2,15 @@ package vndb
 
 import (
 	"encoding/json"
-	"izumi/internal/handler"
-	"izumi/model"
-	"izumi/scraper"
 	"maps"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"izumi/internal/handler"
+	"izumi/model"
+	"izumi/scraper"
 
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
 	"github.com/dokidokikoi/go-common/tools"
@@ -323,7 +324,7 @@ func (v *VNDB) GetGameItem(uri string) (*scraper.GameItem, error) {
 				return characters1
 			}(),
 			Links: func() []model.Link {
-				links := []model.Link{{Name: Name, Url: "https://vndb.org/" + uri}}
+				links := []model.Link{{Name: Name, Url: "https://vndb.org/" + uri, Type: model.LinkTypeSource}}
 				for _, item := range res.ExtLinks {
 					links = append(links, Link2Link(item))
 				}

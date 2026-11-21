@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"izumi/scraper/ggbases"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"testing"
+
+	"izumi/scraper/ggbases"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -16,9 +17,9 @@ import (
 var ggBasesScraper *ggbases.GGBases
 
 func init() {
-	os.Setenv("https_proxy", "socks5://127.0.0.1:20170")
-	os.Setenv("http_proxy", "socks5://127.0.0.1:20170")
-	os.Setenv("all_proxy", "socks5://127.0.0.1:20170")
+	os.Setenv("https_proxy", "socks5://127.0.0.1:7890")
+	os.Setenv("http_proxy", "socks5://127.0.0.1:7890")
+	os.Setenv("all_proxy", "socks5://127.0.0.1:7890")
 	scraper := ggbases.NewGGBases(map[string]string{
 		"User-Agent":      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
 		"Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
@@ -39,7 +40,6 @@ func TestSearch(t *testing.T) {
 }
 
 func TestReq(t *testing.T) {
-
 	data, err := ggBasesScraper.DoReq(http.MethodGet, "https://ggbases.dlgal.com/", nil, nil)
 	if err != nil {
 		panic(err)
@@ -58,7 +58,10 @@ func TestGetItem(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%+v\n", item.Staff)
+	fmt.Printf("%+v\n", item)
+	for _, tag := range item.Tags {
+		fmt.Println(tag.Name)
+	}
 }
 
 func TestGetItemLink(t *testing.T) {

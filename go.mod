@@ -13,7 +13,7 @@ require (
 	github.com/lib/pq v1.12.3
 	github.com/pkg/errors v0.9.1
 	gorm.io/datatypes v1.2.7
-	gorm.io/gorm v1.30.0
+	gorm.io/gorm v1.31.2
 	resty.dev/v3 v3.0.0-beta.3
 )
 

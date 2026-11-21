@@ -1,24 +1,34 @@
 version: "3"
 
 services:
-  izumi: 
-    build: 
+  izumi:
+    build:
       context: ./
       dockerfile: Dockerfile
     environment:
       IZUMI_DATA_DIR: /data/izumi
-      http_proxy: socks5://192.168.1.4:20170
-      https_proxy: socks5://192.168.1.4:20170
-      all_proxy: socks5://192.168.1.4:20170
+      http_proxy: socks5://192.168.1.2:1081
+      https_proxy: socks5://192.168.1.2:1081
+      all_proxy: socks5://192.168.1.2:1081
     # user: "1000:1000"
     ports:
       - "8888:8888"
     volumes:
-      - ./data/db/:/data/db
       - ./data/izumi:/data/izumi
       - ./log:/app/log # optional
       # - nfs-library-zd:/library/zd
       - smb-library-tg:/library/tg
+    restart: always
+
+  postgres:
+    container_name: izumi_postgres
+    image: postgres
+    environment:
+      POSTGRES_PASSWORD: password
+      POSTGRES_USER: izumi
+      POSTGRES_DB: izumi
+    ports:
+      - "5432:5432"
     restart: always
 
 volumes:
@@ -34,3 +44,4 @@ volumes:
       type: cifs
       o: "username=doki,password=doki,iocharset=utf8"
       device: //192.168.1.19/telegram
+

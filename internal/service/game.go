@@ -5,11 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"izumi/config"
-	"izumi/db"
-	"izumi/internal/handler"
-	"izumi/model"
-	"izumi/utils"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,9 +13,15 @@ import (
 	"sync"
 	"time"
 
+	"izumi/config"
+	"izumi/db"
+	"izumi/internal/handler"
+	"izumi/model"
+	"izumi/utils"
+
+	"github.com/lib/pq"
 	"github.com/pkg/errors"
 
-	db_pkg "github.com/dokidokikoi/go-common/db"
 	comm_errors "github.com/dokidokikoi/go-common/errors"
 	"github.com/dokidokikoi/go-common/gopool"
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
@@ -246,8 +247,8 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 					&meta.WhereNode{Conditions: []*meta.Condition{
 						{
 							Field:    "rel_ids",
-							Operator: "",
-							Value:    gorm.Expr(meta.PG_OVERLAP + " " + db_pkg.PgArray(staff.RelIDs)),
+							Operator: meta.PG_OVERLAP,
+							Value:    pq.Array(staff.RelIDs),
 						},
 					}},
 					&meta.ListOption{GetOption: meta.GetOption{Select: []string{"ID"}}})
@@ -328,8 +329,8 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 				cs, err := db.Character().ListComplex(ctx, &model.Character{}, &meta.WhereNode{Conditions: []*meta.Condition{
 					{
 						Field:    "rel_ids",
-						Operator: "",
-						Value:    gorm.Expr(meta.PG_OVERLAP + " " + db_pkg.PgArray(char.RelIDs)),
+						Operator: meta.PG_OVERLAP,
+						Value:    pq.Array(char.RelIDs),
 					},
 				}}, &meta.ListOption{GetOption: meta.GetOption{Select: []string{"ID"}}})
 				if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -875,7 +876,7 @@ func (gsrv *game) Load(ctx context.Context, gVo *handler.GameVo, path string) (e
 		// 按 rel_ids（["platform:id"]）判断角色是否已导入过：命中则更新已有记录，否则新建
 		if len(character.RelIDs) > 0 {
 			list, err := db.Character().ListComplex(ctx, &model.Character{}, &meta.WhereNode{Conditions: []*meta.Condition{
-				{Field: "rel_ids", Operator: "", Value: gorm.Expr(meta.PG_OVERLAP + " " + db_pkg.PgArray(character.RelIDs))},
+				{Field: "rel_ids", Operator: meta.PG_OVERLAP, Value: pq.Array(character.RelIDs)},
 			}}, &meta.ListOption{GetOption: meta.GetOption{Select: []string{"ID"}}})
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return fmt.Errorf("get character error: %w", err)
@@ -890,7 +891,7 @@ func (gsrv *game) Load(ctx context.Context, gVo *handler.GameVo, path string) (e
 	}
 
 	// staff
-	var staffIDM = make(map[uint]*model.Person)
+	staffIDM := make(map[uint]*model.Person)
 	var ss []*model.GameStaff
 	staffCreate := []*model.Person{}
 	staffUpdate := []*model.Person{}
@@ -905,7 +906,7 @@ func (gsrv *game) Load(ctx context.Context, gVo *handler.GameVo, path string) (e
 		// 按 rel_ids（["platform:id"]）判断制作人员是否已导入过：命中则更新已有记录，否则新建
 		if len(staff.RelIDs) > 0 {
 			list, err := db.Person().ListComplex(ctx, &model.Person{}, &meta.WhereNode{Conditions: []*meta.Condition{
-				{Field: "rel_ids", Operator: "", Value: gorm.Expr(meta.PG_OVERLAP + " " + db_pkg.PgArray(staff.RelIDs))},
+				{Field: "rel_ids", Operator: meta.PG_OVERLAP, Value: pq.Array(staff.RelIDs)},
 			}}, &meta.ListOption{GetOption: meta.GetOption{Select: []string{"ID"}}})
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return fmt.Errorf("get person error: %w", err)
@@ -1124,7 +1125,7 @@ func (gsrv *game) DownloadInfo(ctx context.Context, gameID uint, t time.Time) er
 			zaplog.From(ctx).Error("cpGameAllImages", zap.Error(err))
 			continue
 		}
-		f, err := os.OpenFile(infoPath, os.O_WRONLY, 0666)
+		f, err := os.OpenFile(infoPath, os.O_WRONLY, 0o666)
 		if err != nil {
 			if os.IsNotExist(err) {
 				err = nil
@@ -1158,8 +1159,8 @@ func (gsrv *game) SearchExistGame(ctx context.Context, relIds []string) (uint, e
 		Conditions: []*meta.Condition{
 			{
 				Field:    "rel_ids",
-				Operator: "",
-				Value:    gorm.Expr(meta.PG_OVERLAP + " " + db_pkg.PgArray(relIds)),
+				Operator: meta.PG_OVERLAP,
+				Value:    pq.Array(relIds),
 			},
 		},
 	}

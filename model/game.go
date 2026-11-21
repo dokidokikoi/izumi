@@ -1,17 +1,16 @@
 package model
 
 import (
-	"database/sql/driver"
-	"encoding/json"
-	"fmt"
 	"time"
 
+	"github.com/lib/pq"
 	"gorm.io/datatypes"
 )
 
 type LinkType string
 
 const (
+	LinkTypeSource      LinkType = "source"       // 来源
 	LinkTypeMv          LinkType = "mv"           // mv
 	LinkTypeInfo        LinkType = "info"         // 介绍
 	LinkTypeWorkThrough LinkType = "work_through" // 攻略
@@ -29,41 +28,6 @@ type Link struct {
 	Type LinkType `json:"type"`
 }
 
-type Links []Link
-
-func (a *Links) scanBytes(src []byte) error {
-	return json.Unmarshal(src, a)
-}
-
-// Scan implements the sql.Scanner interface.
-func (a *Links) Scan(src interface{}) error {
-	switch src := src.(type) {
-	case []byte:
-		return a.scanBytes(src)
-	case string:
-		return a.scanBytes([]byte(src))
-	case nil:
-		*a = nil
-		return nil
-	}
-
-	return fmt.Errorf("cannot convert %T to Link", src)
-}
-
-// Value implements the driver.Valuer interface.
-func (a Links) Value() (driver.Value, error) {
-	if a == nil {
-		return nil, nil
-	}
-
-	data, err := json.Marshal(a)
-	if err != nil {
-		return nil, err
-	}
-
-	return data, nil
-}
-
 type DownloadType string
 
 const (
@@ -76,40 +40,9 @@ type DownloadInfo struct {
 	Version string       `json:"version"`
 }
 
-type DownloadInfos []DownloadInfo
-
-// Scan implements the sql.Scanner interface.
-func (a *DownloadInfos) Scan(src interface{}) error {
-	switch src := src.(type) {
-	case []byte:
-		return json.Unmarshal(src, a)
-	case string:
-		return json.Unmarshal([]byte(src), a)
-	case nil:
-		*a = nil
-		return nil
-	}
-
-	return fmt.Errorf("cannot convert %T to Link", src)
-}
-
-// Value implements the driver.Valuer interface.
-func (a DownloadInfos) Value() (driver.Value, error) {
-	if a == nil {
-		return "[]", nil
-	}
-
-	data, err := json.Marshal(a)
-	if err != nil {
-		return "[]", err
-	}
-
-	return data, nil
-}
-
 type GameInstance struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	GameID    uint      `gorm:"uniqueIndex:uk_game_version"`
+	ID        uint `gorm:"primaryKey" json:"id"`
+	GameID    uint
 	Version   string    `gorm:"uniqueIndex:uk_game_version;type:varchar(100)" json:"version"`
 	Path      string    `gorm:"index:idx_game_path;type:varchar(255)" json:"path"`
 	Size      int64     `json:"size"`
@@ -123,20 +56,20 @@ func (GameInstance) TableName() string {
 }
 
 type Game struct {
-	ID         uint                        `gorm:"primaryKey" json:"id"`
-	RelIDs     datatypes.JSONSlice[string] `gorm:"type:jsonb;" json:"rel_ids"`
-	Name       string                      `gorm:"type:varchar(255);index:game_name_idx" json:"name"`
-	Alias      datatypes.JSONSlice[string] `gorm:"type:json" json:"alias"`
-	Cover      string                      `gorm:"type:varchar(512)" json:"cover"`
-	Images     datatypes.JSONSlice[string] `gorm:"type:json" json:"images"`
-	CategoryID uint                        `gorm:"default:null" json:"-"`
-	Price      string                      `gorm:"type:varchar(32)" json:"price"`
-	IssueDate  time.Time                   `json:"issue_date"`
-	Story      string                      `json:"story"`
-	Links      datatypes.JSONSlice[Link]   `gorm:"type:json" json:"links"`
-	OtherInfo  string                      `json:"other_info"`
-	CreatedAt  time.Time                   `gorm:"autoCreateTime:milli" json:"created_at"`
-	UpdatedAt  time.Time                   `gorm:"autoUpdateTime:milli"`
+	ID         uint                      `gorm:"primaryKey" json:"id"`
+	RelIDs     pq.StringArray            `gorm:"type:text[];index:game_rel_ids,type:gin" json:"rel_ids"`
+	Name       string                    `gorm:"type:varchar(255);index:game_name_idx" json:"name"`
+	Alias      pq.StringArray            `gorm:"type:text[]" json:"alias"`
+	Cover      string                    `gorm:"type:varchar(512)" json:"cover"`
+	Images     pq.StringArray            `gorm:"type:text[]" json:"images"`
+	CategoryID uint                      `gorm:"default:null" json:"-"`
+	Price      string                    `gorm:"type:varchar(32)" json:"price"`
+	IssueDate  time.Time                 `json:"issue_date"`
+	Story      string                    `json:"story"`
+	Links      datatypes.JSONSlice[Link] `gorm:"type:jsonb" json:"links"`
+	OtherInfo  string                    `json:"other_info"`
+	CreatedAt  time.Time                 `gorm:"autoCreateTime:milli" json:"created_at"`
+	UpdatedAt  time.Time                 `gorm:"autoUpdateTime:milli"`
 
 	Category *Category `gorm:"foreignKey:CategoryID" json:"category"`
 	Series   []*Series `gorm:"many2many:game_series;" json:"series"`
@@ -207,7 +140,7 @@ const (
 type GameStaff struct {
 	GameID    uint                                `gorm:"primaryKey"`
 	PersonID  uint                                `gorm:"primaryKey"`
-	Relations datatypes.JSONSlice[PersonRelation] `gorm:"type:json"`
+	Relations datatypes.JSONSlice[PersonRelation] `gorm:"type:text[]"`
 	Person    *Person                             `gorm:"-" json:"-"`
 }
 

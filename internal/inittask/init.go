@@ -2,6 +2,7 @@ package inittask
 
 import (
 	"context"
+
 	"izumi/config"
 	"izumi/db"
 	"izumi/internal/service"
@@ -25,6 +26,6 @@ func Init() {
 
 	systemtask.StartDownload()
 	systemtask.StartLoad()
-	systemtask.StartAutoScrap()
-	systemtask.StartAutoDetectScrap()
+	//systemtask.StartAutoScrap()
+	//systemtask.StartAutoDetectScrap()
 }

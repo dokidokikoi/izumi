@@ -1,16 +1,15 @@
-# postgresql:
-#   host: 127.0.0.1
-#   port: 5432
-#   username: izumi
-#   database: izumi
-#   password: 1234567
-sqlite:
-  database: /data/db/izumi.db
-app: 
+postgresql:
+  host: izumi_postgres
+  port: 5432
+  username: izumi
+  database: izumi
+  password: password
+#sqlite:
+#  database: /data/db/izumi.db
+app:
   port: 19876
 log:
   - filename: ./log/info.log
     level_range: "[info,error)"
   - filename: ./log/error.log
     level_range: "[error,)"
-  

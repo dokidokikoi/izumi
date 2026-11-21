@@ -3,16 +3,16 @@ package getchu
 import (
 	"bytes"
 	"fmt"
-	"izumi/internal/handler"
-	"izumi/model"
-	"izumi/scraper"
-	"izumi/utils"
-
 	"maps"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+
+	"izumi/internal/handler"
+	"izumi/model"
+	"izumi/scraper"
+	"izumi/utils"
 
 	"github.com/pkg/errors"
 
@@ -161,7 +161,7 @@ func (gc *GetChu) GetGameItem(uri string) (*scraper.GameItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	item := &scraper.GameItem{GameVo: handler.GameVo{Links: []model.Link{{Name: gc.name, Url: uri, Type: model.LinkTypeInfo}}}, ScraperName: gc.name}
+	item := &scraper.GameItem{GameVo: handler.GameVo{Links: []model.Link{{Name: gc.name, Url: uri, Type: model.LinkTypeSource}}}, ScraperName: gc.name}
 	root, err := goquery.NewDocumentFromReader(bytes.NewBuffer(data))
 	if err != nil {
 		return nil, err

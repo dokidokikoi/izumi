@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"gorm.io/datatypes"
+	"github.com/lib/pq"
 )
 
 type Trait struct {
@@ -52,19 +52,19 @@ func (p PersonalInfo) Value() (driver.Value, error) {
 }
 
 type Character struct {
-	ID           uint                        `gorm:"primaryKey" json:"id"`
-	RelIDs       datatypes.JSONSlice[string] `gorm:"type:jsonb;" json:"rel_ids"`
-	Name         string                      `gorm:"type:varchar(255);index:character_name_idx" json:"name"`
-	Alias        datatypes.JSONSlice[string] `gorm:"type:jsonb" json:"alias"`
-	Gender       Gender                      `gorm:"type:varchar(10)" json:"gender"`
-	Summary      string                      `json:"summary"`
-	Cover        string                      `gorm:"type:varchar(512)" json:"cover"`
-	Images       datatypes.JSONSlice[string] `gorm:"type:jsonb" json:"images"`
-	PersonID     uint                        `json:"-"`
-	Weight       int8                        `gorm:"default:0;type:int8" json:"weight"`
-	PersonalInfo PersonalInfo                `gorm:"type:jsonb" json:"personal_info"`
-	CreatedAt    time.Time                   `gorm:"autoCreateTime:milli" json:"created_at"`
-	UpdatedAt    time.Time                   `gorm:"autoUpdateTime:milli"`
+	ID           uint           `gorm:"primaryKey" json:"id"`
+	RelIDs       pq.StringArray `gorm:"type:text[];index:chara_rel_ids,type:gin" json:"rel_ids"`
+	Name         string         `gorm:"type:varchar(255);index:character_name_idx" json:"name"`
+	Alias        pq.StringArray `gorm:"type:text[]" json:"alias"`
+	Gender       Gender         `gorm:"type:varchar(10)" json:"gender"`
+	Summary      string         `json:"summary"`
+	Cover        string         `gorm:"type:varchar(512)" json:"cover"`
+	Images       pq.StringArray `gorm:"type:text[]" json:"images"`
+	PersonID     uint           `json:"-"`
+	Weight       int8           `gorm:"default:0;type:int8" json:"weight"`
+	PersonalInfo PersonalInfo   `gorm:"type:jsonb" json:"personal_info"`
+	CreatedAt    time.Time      `gorm:"autoCreateTime:milli" json:"created_at"`
+	UpdatedAt    time.Time      `gorm:"autoUpdateTime:milli"`
 
 	CV Person `gorm:"foreignKey:PersonID" json:"cv"`
 }
