@@ -203,11 +203,11 @@ func (v *VNDB) GetGameItem(uri string) (*scraper.GameItem, error) {
 			Story:     res.Description,
 			Tags: func() []*model.Tag {
 				tags := []*model.Tag{}
-				for _, tag := range res.Tags {
-					tags = append(tags, &model.Tag{
-						Name: tag.Name,
-					})
-				}
+				// for _, tag := range res.Tags {
+				// 	tags = append(tags, &model.Tag{
+				// 		Name: tag.Name,
+				// 	})
+				// }
 				return tags
 			}(),
 			Staff: func() []handler.StaffVo {

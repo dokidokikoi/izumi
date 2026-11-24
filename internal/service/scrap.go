@@ -3,22 +3,23 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"izumi/constant"
 	"izumi/db"
 	"izumi/model"
 	"izumi/scraper/event"
 	"izumi/utils"
-	"sync"
 	"time"
 
-	"github.com/dokidokikoi/go-common/gopool"
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
 	"github.com/dokidokikoi/go-common/notice"
+	"github.com/pkg/errors"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 type IScrap interface {
-	Scrap(ctx context.Context, requestID string, objs []model.ScrapObj, afterHook ...func(scraperName string, success bool)) (*sync.WaitGroup, error)
+	Scrap(ctx context.Context, requestID string, objs []model.ScrapObj, afterHook ...func(scraperName string, success bool)) (*errgroup.Group, error)
 }
 
 var _ IScrap = (*scrap)(nil)
@@ -27,8 +28,9 @@ type scrap struct {
 	store db.IStore
 }
 
-func (s *scrap) Scrap(ctx context.Context, requestID string, objs []model.ScrapObj, afterHook ...func(scraperName string, success bool)) (*sync.WaitGroup, error) {
-	wait := &sync.WaitGroup{}
+func (s *scrap) Scrap(ctx context.Context, requestID string, objs []model.ScrapObj, afterHook ...func(scraperName string, success bool)) (*errgroup.Group, error) {
+	group := errgroup.Group{}
+	group.SetLimit(10)
 	for _, req := range objs {
 		_, err := db.GetStore().Task().Get(ctx, &model.Task{RequestID: requestID, Param: req.Url}, nil)
 		if err == nil {
@@ -38,11 +40,9 @@ func (s *scrap) Scrap(ctx context.Context, requestID string, objs []model.ScrapO
 		if !ok {
 			continue
 		}
-		wait.Add(1)
-		gopool.CtxGo(ctx, func() {
+		group.Go(func() error {
 			var err error
 			defer func() {
-				wait.Done()
 				success := true
 				if err != nil {
 					success = false
@@ -70,13 +70,12 @@ func (s *scrap) Scrap(ctx context.Context, requestID string, objs []model.ScrapO
 			}
 			err = db.GetStore().Task().Create(ctx, task, nil)
 			if err != nil {
-				zaplog.L().Error("创建任务失败", zap.Error(err))
-				return
+				return errors.Wrap(err, "创建任务失败")
 			}
 			defer func() {
 				err := db.GetStore().Task().Update(ctx, task, nil)
 				if err != nil {
-					zaplog.L().Error("更新任务失败", zap.Error(err))
+					zaplog.L().Debug("更新任务失败", zap.Error(err))
 					return
 				}
 			}()
@@ -85,21 +84,21 @@ func (s *scrap) Scrap(ctx context.Context, requestID string, objs []model.ScrapO
 			task.Duration = int64(task.EndAt.Sub(task.StartAt).Seconds())
 			if err != nil {
 				task.Status = model.TaskStatusFailed
-				zaplog.L().Error("获取详情失败", zap.String("scraper name", req.Name), zap.String("url", req.Url), zap.Error(err))
-				return
+				return fmt.Errorf("获取详情失败. scraper name: %s, url: %s. err: %w", req.Name, req.Url, err)
 			}
 
 			data, err := json.Marshal(item)
 			if err != nil {
 				task.Status = model.TaskStatusFailed
-				zaplog.L().Error("刮削失败", zap.Error(err))
-				return
+				return errors.Wrap(err, "刮削失败")
 			}
 			task.Result = string(data)
 			task.Status = model.TaskStatusSucceed
+
+			return nil
 		})
 	}
-	return wait, nil
+	return &group, nil
 }
 
 func NewScrap(store db.IStore) *scrap {

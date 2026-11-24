@@ -174,7 +174,6 @@ func (ds *DlSite) GetGameItem(uri string) (*scraper.GameItem, error) {
 	}
 
 	item.Name = root.Find("#work_name").Text()
-	item.DlCode = id
 	item.Cover, item.Images, err = ds.GetItemCover(root)
 	if err != nil {
 		ds.logger.Error("获取封面失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))

@@ -385,9 +385,12 @@ func SaveHtmlImg(ctx context.Context, html string) (string, error) {
 				imagesM[src] = ""
 				images = append(images, src)
 			} else {
-				err := tools.Cp(filepath.Join(config.TmpDir, strings.TrimPrefix("/api/file/", src)), filepath.Join(config.DataDir, utils.GetFileName(src)))
+				imgPath := filepath.Join(config.TmpDir, strings.TrimPrefix("/api/file/", src))
+				err := tools.Cp(imgPath, filepath.Join(config.DataDir, utils.GetFileName(src)))
 				if err != nil && !errors.Is(err, os.ErrExist) {
 					zaplog.L().Error("rename file error", zap.String("file path", src), zap.Error(err))
+				} else {
+					os.Remove(imgPath)
 				}
 			}
 		}

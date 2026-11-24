@@ -19,6 +19,7 @@ import (
 	"izumi/model"
 	"izumi/utils"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/pkg/errors"
 
@@ -65,15 +66,20 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 	// }
 
 	db := gsrv.store
-	if gVo.ID == 0 {
+
+	// 检查是否存在游戏
+	gVo.ID = 0
+	if len(gVo.RelIDs) >= 0 {
 		gVo.ID, err = gsrv.SearchExistGame(ctx, gVo.RelIDs)
 		if err != nil {
 			return errors.Wrap(err, "gsrv.SearchExistGame()")
 		}
+	} else {
+		gVo.RelIDs = append(gVo.RelIDs, fmt.Sprintf("%s:%s", model.REL_ID_CUSTOM, uuid.NewString()))
 	}
 
 	g := tools.Ptr(handler.Vo2Game(*gVo))
-	// 处理category
+	// 保存游戏分类
 	{
 		if gVo.Category != nil && gVo.Category.Name != "" {
 			c, err := db.Category().Get(ctx, &model.Category{Name: gVo.Category.Name}, &meta.GetOption{Include: []string{"ID"}})
@@ -91,6 +97,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 			}
 		}
 	}
+	// 保存游戏信息
 	{
 		g.Story, err = SaveHtmlImg(ctx, g.Story)
 		if err != nil {
@@ -108,6 +115,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 			}
 		}
 	}
+	// 保存游戏实例信息
 	if gIns != nil {
 		gIns.GameID = g.ID
 		i, err := db.GameInstance().Get(ctx, &model.GameInstance{GameID: g.ID, Version: gIns.Version}, &meta.GetOption{Include: []string{"ID"}})
@@ -127,6 +135,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 			}
 		}
 	}
+	// 保存游戏品牌
 	if len(gVo.Brands) > 0 {
 		gameBrands := []*model.GameBrands{}
 		for _, brand := range gVo.Brands {
@@ -166,6 +175,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 			}
 		}
 	}
+	// 保存游戏系列
 	if len(gVo.Series) > 0 {
 		gameSeries := []*model.GameSeries{}
 		for _, series := range gVo.Series {
@@ -206,6 +216,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 			}
 		}
 	}
+	// 保存游戏标签
 	if len(gVo.Tags) > 0 {
 		gameTags := []*model.GameTag{}
 		tagSrv := NewTag(gsrv.store)
@@ -236,6 +247,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 			return err
 		}
 	}
+	// 保存游戏人员
 	staffM := map[string]uint{}
 	if len(gVo.Staff) > 0 {
 		gameStaff := []*model.GameStaff{}
@@ -258,27 +270,8 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 				if len(persons) > 0 {
 					staff.ID = persons[0].ID
 				}
-			}
-			if staff.ID == 0 {
-				list, err := db.Person().ListComplex(
-					ctx,
-					&model.Person{},
-					&meta.WhereNode{
-						Conditions: []*meta.Condition{
-							{
-								Field:    "name",
-								Operator: meta.EQUAL,
-								Value:    staff.Name,
-							},
-						},
-					},
-					&meta.ListOption{GetOption: meta.GetOption{Select: []string{"ID"}}})
-				if err != nil {
-					return err
-				}
-				if len(list) > 0 {
-					staff.ID = list[0].ID
-				}
+			} else {
+				staff.RelIDs = append(staff.RelIDs, fmt.Sprintf("%s:%s", model.REL_ID_CUSTOM, uuid.NewString()))
 			}
 			s := tools.Ptr(handler.Vo2Person(staff))
 			if staff.ID != 0 {
@@ -322,6 +315,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 			staffM[s.Name] = s.ID
 		}
 	}
+	// 保存游戏角色
 	if len(gVo.Characters) > 0 {
 		gameCharacters := []*model.GameCharacter{}
 		for _, char := range gVo.Characters {
@@ -339,6 +333,8 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 				if len(cs) > 0 {
 					char.ID = cs[0].ID
 				}
+			} else {
+				char.RelIDs = append(char.RelIDs, fmt.Sprintf("%s:%s", model.REL_ID_CUSTOM, uuid.NewString()))
 			}
 			c := tools.Ptr(handler.Vo2Character(char))
 			if char.CV.Name != "" {
@@ -699,10 +695,12 @@ func (gsrv *game) Search(ctx context.Context, param handler.GameListReq, opt *me
 	return total, gvos, nil
 }
 
+// 将游戏相关图片下载到本地
 func (gsrv *game) SaveFiles(ctx context.Context, g *handler.GameVo, process ...func(total int)) error {
 	cs := g.Characters
 	ss := g.Staff
 	images := []string{}
+	// host -> url -> 引用地址
 	urls := map[string]map[string][]*string{}
 	f := func(image *string) bool {
 		if len(*image) > 4 && (*image)[:4] == "http" {
@@ -780,16 +778,20 @@ func (gsrv *game) SaveFiles(ctx context.Context, g *handler.GameVo, process ...f
 				if len(process) > 0 {
 					process[0](len(url))
 				}
+				// 避免频繁请求同一个服务器
 				time.Sleep(time.Millisecond * 50)
 			}
 		})
 	}
-	zaplog.L().Info("images", zap.Any("data", images))
-	zaplog.L().Info("dir", zap.Any("name", config.DataDir))
+	zaplog.L().Debug("images", zap.Any("data", images))
+	zaplog.L().Debug("dir", zap.Any("name", config.DataDir))
 	for _, image := range images {
 		err := tools.Cp(image, filepath.Join(config.DataDir, utils.GetFileName(image)))
 		if err != nil && !errors.Is(err, os.ErrExist) {
 			zaplog.L().Error("rename file error", zap.String("file path", image), zap.Error(err))
+		} else {
+			// 从临时文件夹移除
+			os.Remove(image)
 		}
 	}
 
@@ -798,291 +800,27 @@ func (gsrv *game) SaveFiles(ctx context.Context, g *handler.GameVo, process ...f
 }
 
 func (gsrv *game) Load(ctx context.Context, gVo *handler.GameVo, path string) (e error) {
-	db := db.GetStore()
-	cate, err := db.Category().Get(ctx, &model.Category{Name: gVo.Category.Name}, &meta.GetOption{Select: []string{"ID"}})
-	if err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("create category error: %w", err)
-		}
-	}
-	if cate == nil {
-		err = db.Category().Create(ctx, gVo.Category, nil)
-		if err != nil {
-			return fmt.Errorf("create category error: %w", err)
-		}
-	} else {
-		gVo.Category.ID = cate.ID
-	}
-	for _, brand := range gVo.Brands {
-		dev, err := db.Brand().Get(ctx, &model.Brand{Name: brand.Name}, &meta.GetOption{Select: []string{"ID"}})
-		if err != nil {
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("create brand error: %w", err)
-			}
-		}
-		if dev == nil {
-			err = db.Brand().Create(ctx, brand, nil)
-			if err != nil {
-				return fmt.Errorf("create brand error: %w", err)
-			}
-		} else {
-			brand.ID = dev.ID
-		}
-	}
+	var err error
 
-	for _, series := range gVo.Series {
-		s, err := db.Series().Get(ctx, &model.Series{Name: series.Name}, &meta.GetOption{Select: []string{"ID"}})
-		if err != nil {
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("create series error: %w", err)
-			}
-		}
-		if s == nil {
-			err = db.Series().Create(ctx, series, nil)
-			if err != nil {
-				return fmt.Errorf("create category error: %w", err)
-			}
-		} else {
-			series.ID = s.ID
-		}
-	}
-	for _, tag := range gVo.Tags {
-		t, err := db.Tag().Get(ctx, &model.Tag{Name: tag.Name}, &meta.GetOption{Select: []string{"ID"}})
-		if err != nil {
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("create tag error: %w", err)
-			}
-		}
-		if t == nil {
-			err = db.Tag().Create(ctx, tag, nil)
-			if err != nil {
-				return fmt.Errorf("create tag error: %w", err)
-			}
-		} else {
-			tag.ID = t.ID
-		}
-	}
-
-	var cs []*model.GameCharacter
-	charactersCreate := []*model.Character{}
-	charactersUpdate := []*model.Character{}
-	for _, character := range gVo.Characters {
-		c := tools.Ptr(handler.Vo2Character(character))
-		cs = append(cs, &model.GameCharacter{
-			Character: c,
-			Relation:  character.Rlation,
-		})
-
-		// 按 rel_ids（["platform:id"]）判断角色是否已导入过：命中则更新已有记录，否则新建
-		if len(character.RelIDs) > 0 {
-			list, err := db.Character().ListComplex(ctx, &model.Character{}, &meta.WhereNode{Conditions: []*meta.Condition{
-				{Field: "rel_ids", Operator: meta.PG_OVERLAP, Value: pq.Array(character.RelIDs)},
-			}}, &meta.ListOption{GetOption: meta.GetOption{Select: []string{"ID"}}})
-			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("get character error: %w", err)
-			}
-			if len(list) > 0 {
-				c.ID = list[0].ID
-				charactersUpdate = append(charactersUpdate, c)
-				continue
-			}
-		}
-		charactersCreate = append(charactersCreate, c)
-	}
-
-	// staff
-	staffIDM := make(map[uint]*model.Person)
-	var ss []*model.GameStaff
-	staffCreate := []*model.Person{}
-	staffUpdate := []*model.Person{}
-	for _, staff := range gVo.Staff {
-		s := tools.Ptr(handler.Vo2Person(staff))
-		ss = append(ss, &model.GameStaff{
-			Person:    s,
-			Relations: staff.Relation,
-		})
-		staffIDM[staff.ID] = s
-
-		// 按 rel_ids（["platform:id"]）判断制作人员是否已导入过：命中则更新已有记录，否则新建
-		if len(staff.RelIDs) > 0 {
-			list, err := db.Person().ListComplex(ctx, &model.Person{}, &meta.WhereNode{Conditions: []*meta.Condition{
-				{Field: "rel_ids", Operator: meta.PG_OVERLAP, Value: pq.Array(staff.RelIDs)},
-			}}, &meta.ListOption{GetOption: meta.GetOption{Select: []string{"ID"}}})
-			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("get person error: %w", err)
-			}
-			if len(list) > 0 {
-				s.ID = list[0].ID
-				staffUpdate = append(staffUpdate, s)
-				continue
-			}
-		}
-		staffCreate = append(staffCreate, s)
-	}
-
-	// 启动事务
-	tx := gsrv.store.Transaction().Begin()
-	defer func() {
-		if e != nil {
-			tx.Transaction().Rollback()
-		} else {
-			loadGameAllImages(zaplog.From(ctx), path)
-		}
-	}()
-
-	if len(staffCreate) > 0 {
-		err = tx.Person().Creates(ctx, staffCreate, nil)
-		if err != nil {
-			return err
-		}
-	}
-	errs := tx.Person().UpdateCollection(ctx, staffUpdate, nil)
-	if len(errs) > 0 {
-		for _, err := range errs {
-			if !errors.Is(err, comm_errors.ErrNoUpdateRows) {
-				return err
-			}
-		}
-	}
-
-	// 设置 PersonID
-	for _, character := range cs {
-		staff := staffIDM[character.Character.PersonID]
-		if staff != nil {
-			character.Character.PersonID = staff.ID
-		}
-	}
-	if len(charactersCreate) > 0 {
-		err = tx.Character().Creates(ctx, charactersCreate, nil)
-		if err != nil {
-			return err
-		}
-	}
-	errs = tx.Character().UpdateCollection(ctx, charactersUpdate, nil)
-	if len(errs) > 0 {
-		for _, err := range errs {
-			if !errors.Is(err, comm_errors.ErrNoUpdateRows) {
-				return err
-			}
-		}
-	}
-
-	g := tools.Ptr(handler.Vo2Game(*gVo))
-	// 按 rel_ids（["platform:id"]）判断游戏是否已导入过：已存在则走更新，否则新建
-	if gVo.ID == 0 && len(gVo.RelIDs) > 0 {
+	if len(gVo.RelIDs) >= 0 {
 		gVo.ID, err = gsrv.SearchExistGame(ctx, gVo.RelIDs)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "gsrv.SearchExistGame()")
 		}
-	}
-	if gVo.ID == 0 {
-		err = tx.Game().Create(ctx, g, &meta.CreateOption{Omit: []string{clause.Associations}})
-		if err != nil {
-			return err
-		}
-		if gVo.Version != "" {
-			err = tx.GameInstance().Create(ctx, &model.GameInstance{
-				GameID:  g.ID,
-				Version: gVo.Version,
-				Path:    path,
-				Size:    gVo.Size,
-				Comment: gVo.Comment,
-			}, nil)
-			if err != nil {
-				return err
-			}
-		}
-	} else {
-		g.ID = gVo.ID
-		err = tx.Game().Update(ctx, g, &meta.UpdateOption{Omit: []string{clause.Associations}})
-		if err != nil {
-			return err
-		}
-		err = tx.GameInstance().Update(ctx, &model.GameInstance{
-			GameID:  g.ID,
-			Version: gVo.Version,
-			Path:    path,
-			Size:    gVo.Size,
-			Comment: gVo.Comment,
-		}, nil)
-		if err != nil {
-			return err
-		}
-		err = tx.GameCharacter().Delete(ctx, &model.GameCharacter{GameID: g.ID}, nil)
-		if err != nil {
-			return err
-		}
-		err = tx.GameSeries().Delete(ctx, &model.GameSeries{GameID: g.ID}, nil)
-		if err != nil {
-			return err
-		}
-		err = tx.GameTag().Delete(ctx, &model.GameTag{GameID: g.ID}, nil)
-		if err != nil {
-			return err
-		}
-		err = tx.GameStaff().Delete(ctx, &model.GameStaff{GameID: g.ID}, nil)
-		if err != nil {
-			return err
-		}
-		err = tx.GameBrands().Delete(ctx, &model.GameBrands{GameID: g.ID}, nil)
-		if err != nil {
-			return err
+		// 游戏已经存在，直接返回
+		if gVo.ID > 0 {
+			return
 		}
 	}
 
-	var gameSeries []*model.GameSeries
-	for _, series := range gVo.Series {
-		gameSeries = append(gameSeries, &model.GameSeries{
-			GameID:   g.ID,
-			SeriesID: series.ID,
-		})
-	}
-	err = tx.GameSeries().Creates(ctx, gameSeries, nil)
-	if err != nil {
-		return err
-	}
+	e = gsrv.UpsertFull(ctx, gVo, &model.GameInstance{
+		Version: gVo.Version,
+		Path:    path,
+		Size:    gVo.Size,
+		Comment: gVo.Comment,
+	}, func(step int) {})
 
-	var gameBrands []*model.GameBrands
-	for _, brand := range gVo.Brands {
-		gameBrands = append(gameBrands, &model.GameBrands{
-			GameID:  g.ID,
-			BrandID: brand.ID,
-		})
-	}
-	err = tx.GameBrands().Creates(ctx, gameBrands, nil)
-	if err != nil {
-		return err
-	}
-
-	var gameTags []*model.GameTag
-	for _, tag := range gVo.Tags {
-		gameTags = append(gameTags, &model.GameTag{
-			GameID: g.ID,
-			TagID:  tag.ID,
-		})
-	}
-	err = tx.GameTag().Creates(ctx, gameTags, nil)
-	if err != nil {
-		return err
-	}
-
-	for _, staff := range ss {
-		staff.GameID = g.ID
-	}
-	err = tx.GameStaff().Creates(ctx, ss, nil)
-	if err != nil {
-		return err
-	}
-
-	for _, character := range cs {
-		character.GameID = g.ID
-	}
-	err = tx.GameCharacter().Creates(ctx, cs, nil)
-	if err != nil {
-		return err
-	}
-
-	return tx.Transaction().Commit()
+	return
 }
 
 func (gsrv *game) DownloadInfo(ctx context.Context, gameID uint, t time.Time) error {

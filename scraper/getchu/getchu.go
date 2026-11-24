@@ -212,8 +212,6 @@ func (gc *GetChu) GetGameItem(uri string) (*scraper.GameItem, error) {
 			item.Price = content
 		} else if strings.Contains(title, "発売日") {
 			item.IssueDate = tools.Str2Time(content)
-		} else if strings.Contains(title, "JANコード") {
-			item.JanCode = content
 		} else if strings.Contains(title, "原画") {
 			s.Find("td").Eq(1).Find("a").Each(func(i int, s *goquery.Selection) {
 				name, err := tools.Jp2Utf8([]byte(s.Text()))

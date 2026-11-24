@@ -12,6 +12,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.12.3
 	github.com/pkg/errors v0.9.1
+	golang.org/x/sync v0.18.0
 	gorm.io/datatypes v1.2.7
 	gorm.io/gorm v1.31.2
 	resty.dev/v3 v3.0.0-beta.3
@@ -32,7 +33,6 @@ require (
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
-	golang.org/x/sync v0.18.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
 	gorm.io/driver/mysql v1.5.6 // indirect
 	gorm.io/driver/sqlite v1.6.0 // indirect

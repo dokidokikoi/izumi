@@ -7,6 +7,7 @@ import (
 	systemtask "izumi/internal/system_task"
 	"izumi/model"
 
+	zaplog "github.com/dokidokikoi/go-common/log/zap"
 	"github.com/dokidokikoi/go-common/middleware"
 
 	"github.com/google/uuid"
@@ -17,7 +18,13 @@ func (h Handler) Scrape(ctx context.Context, input *handler.ScraperDetailReq, op
 		input.RequestID = uuid.New().String()
 	}
 	requestID := input.RequestID
-	_, err := h.srv.Scrap().Scrap(ctx, requestID, input.Objs)
+	wait, err := h.srv.Scrap().Scrap(ctx, requestID, input.Objs)
+	go func() {
+		err = wait.Wait()
+		if err != nil {
+			zaplog.L().Error(err.Error())
+		}
+	}()
 
 	return requestID, err
 }

@@ -38,8 +38,6 @@ type GameInlineVo struct {
 type GameVo struct {
 	ID            uint                 `json:"id"`
 	RelIDs        []string             `json:"rel_ids"`
-	JanCode       string               `json:"jan_code"`
-	DlCode        string               `json:"dl_code"`
 	Name          string               `json:"name"`
 	Alias         []string             `json:"alias"`
 	Cover         string               `json:"cover"`

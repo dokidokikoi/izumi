@@ -7,6 +7,8 @@ import (
 	"gorm.io/datatypes"
 )
 
+const REL_ID_CUSTOM = "custom"
+
 type LinkType string
 
 const (

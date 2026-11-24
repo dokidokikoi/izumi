@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/abadojack/whatlanggo"
-	"github.com/dokidokikoi/go-common/gopool"
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
 	meta "github.com/dokidokikoi/go-common/meta/option"
 	"github.com/dokidokikoi/go-common/notice"
@@ -26,6 +25,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 // 任务整体进度按 10000 刻度计算，划分三个阶段：
@@ -216,37 +216,34 @@ func StartAutoScrap() {
 }
 
 func AutoScrap(t *model.SystemTask) {
-	gopool.CtxGo(context.Background(), func() {
+	group := errgroup.Group{}
+	group.SetLimit(10)
+	group.Go(func() (err error) {
 		var result string
-		var e error
 		defer func() {
 			state := model.SystemTaskStateDone
-			if e != nil {
-				zaplog.L().Error("system scrap task error", zap.Error(e))
-				state = model.SystemTaskStateFailed
-			}
 			if err := db.GetStore().SystemTask().Update(context.Background(), &model.SystemTask{
 				ID:     t.ID,
 				State:  state,
 				Result: result,
 			}, nil); err != nil {
-				zaplog.L().Error("system update error", zap.Error(err))
+				zaplog.L().Debug("system update error", zap.Error(err))
 			}
 
 			if err := notice.HubIns.SendBroadcast("", notice.NoticeResponse{
 				Rid:     uuid.NewString(),
 				Event:   utils.ConcatEvent(constant.TOPIC_SCRAPER, constant.EVENT_SCRAPER_AUTOSCRAP),
-				Success: e == nil,
+				Success: err == nil,
 				Message: result,
 			}); err != nil {
-				zaplog.L().Error("send notify error", zap.Error(err))
+				zaplog.L().Debug("send notify error", zap.Error(err))
 			}
 		}()
 
 		// vndb 是数据合并的主源，必须存在
 		if !containsScraper(t.Param.ScrapObjs, vndb.Name) {
 			result = "auto scrap need vndb item"
-			e = errors.New(result)
+			err = errors.New(result)
 			return
 		}
 
@@ -261,11 +258,13 @@ func AutoScrap(t *model.SystemTask) {
 			scrapPhase.done()
 		})
 		if err != nil {
-			e = err
 			result = err.Error()
 			return
 		}
-		wait.Wait()
+		err = wait.Wait()
+		if err != nil {
+			zaplog.L().Error(err.Error())
+		}
 		scrapPhase.doneAll() // 抓取阶段结束，补满该阶段权重
 
 		// 阶段 2/3：合并 vndb 与其它来源
@@ -274,14 +273,12 @@ func AutoScrap(t *model.SystemTask) {
 			Status:    model.TaskStatusSucceed,
 		}, nil)
 		if err != nil {
-			e = err
 			result = err.Error()
 			return
 		}
 
 		itemM, err := groupScrapItems(list)
 		if err != nil {
-			e = err
 			result = err.Error()
 			return
 		}
@@ -294,13 +291,12 @@ func AutoScrap(t *model.SystemTask) {
 
 		// 阶段 3/3：存图 + 入库。UpsertFull 内部按文件数回调 step 刻度（权重 weightSave）。
 		srv := service.NewGame(db.GetStore())
-		if err := srv.UpsertFull(context.Background(), &gVo, &model.GameInstance{
+		if err = srv.UpsertFull(context.Background(), &gVo, &model.GameInstance{
 			Path:    t.Param.Path,
 			Version: defaultVersion(t.Param.Version),
 		}, func(step int) {
 			prog.add(int32(step))
 		}); err != nil {
-			e = err
 			result = err.Error()
 			return
 		}
@@ -312,6 +308,8 @@ func AutoScrap(t *model.SystemTask) {
 				zaplog.L().With(zap.Uint("game id", gVo.ID)).Error("downloadInfo", zap.Error(derr))
 			}
 		}()
+
+		return
 	})
 }
 
@@ -351,23 +349,20 @@ func mergeScrapResults(itemM map[string][]scraper.GameItem) (handler.GameVo, boo
 	gVo := items[0].GameVo
 
 	// 建立名称（小写去空格）到下标的索引，用于跨来源匹配角色 / 制作人员
-	aliasM := map[string]struct{}{}
-	for _, a := range gVo.Alias {
-		aliasM[a] = struct{}{}
-	}
-	tagM := map[string]struct{}{}
+	aliaSet := tools.NewSet(gVo.Alias...)
+	tagSet := tools.NewSet[string]()
 	for _, t := range gVo.Tags {
-		tagM[t.Name] = struct{}{}
+		tagSet.Add(t.Name)
 	}
 	nameIdx := buildMatchIndex(gVo.Characters, func(c handler.CharacterVo) []string { return append(c.Alias, c.Name) })
 	staffIdx := buildMatchIndex(gVo.Staff, func(s handler.StaffVo) []string { return append(s.Alias, s.Name) })
 
 	for _, item := range itemM {
 		for _, i := range item {
-			mergeItem(&gVo, i, aliasM, tagM, nameIdx, staffIdx)
+			mergeItem(&gVo, i, aliaSet, tagSet, nameIdx, staffIdx)
 		}
 	}
-	gVo.Alias = tools.Keys(aliasM)
+	gVo.Alias = aliaSet.Slice()
 
 	// story 来源优先级：twodfan > dlsite（这两个来源的简介更完整）
 	pickStory := func(name string) (string, bool) {
@@ -390,22 +385,23 @@ func mergeScrapResults(itemM map[string][]scraper.GameItem) (handler.GameVo, boo
 	// 仅保留有明确职责关系的制作人员
 	gVo.Staff = filterRelatedStaff(gVo.Staff)
 	gVo.Images = tools.NewSet(gVo.Images...).Slice()
+	gVo.RelIDs = tools.NewSet(gVo.RelIDs...).Slice()
 	return gVo, true
 }
 
 // mergeItem 把单个其它来源的数据合并进主 GameVo。
 func mergeItem(
 	gVo *handler.GameVo, i scraper.GameItem,
-	aliasM map[string]struct{}, tagM map[string]struct{},
+	aliaSet, tagSet *tools.Set[string],
 	characterM, staffM *matchIndex,
 ) {
 	gVo.RelIDs = append(gVo.RelIDs, i.RelIDs...)
 	for _, a := range i.Alias {
-		aliasM[a] = struct{}{}
+		aliaSet.Add(a)
 	}
 	for _, t := range i.Tags {
-		if _, ok := tagM[t.Name]; !ok {
-			tagM[t.Name] = struct{}{}
+		if tagSet.Has(t.Name) {
+			tagSet.Add(t.Name)
 			gVo.Tags = append(gVo.Tags, t)
 		}
 	}
@@ -419,12 +415,6 @@ func mergeItem(
 	}
 	if gVo.IssueDate.IsZero() {
 		gVo.IssueDate = i.IssueDate
-	}
-	if gVo.DlCode == "" {
-		gVo.DlCode = i.DlCode
-	}
-	if gVo.JanCode == "" {
-		gVo.JanCode = i.JanCode
 	}
 	if gVo.Price == "" {
 		gVo.Price = i.Price
