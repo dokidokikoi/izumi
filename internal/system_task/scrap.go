@@ -3,6 +3,10 @@ package systemtask
 import (
 	"context"
 	"encoding/json"
+	"strings"
+	"sync/atomic"
+	"time"
+
 	"izumi/constant"
 	"izumi/db"
 	"izumi/internal/handler"
@@ -13,9 +17,6 @@ import (
 	"izumi/scraper/twodfan"
 	"izumi/scraper/vndb"
 	"izumi/utils"
-	"strings"
-	"sync/atomic"
-	"time"
 
 	"github.com/abadojack/whatlanggo"
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
@@ -291,6 +292,10 @@ func AutoScrap(t *model.SystemTask) {
 
 		// 阶段 3/3：存图 + 入库。UpsertFull 内部按文件数回调 step 刻度（权重 weightSave）。
 		srv := service.NewGame(db.GetStore())
+		err = srv.SaveFiles(context.Background(), &gVo, nil)
+		if err != nil {
+			zaplog.L().With(zap.String("game name", gVo.Name)).Error("", zap.Error(err))
+		}
 		if err = srv.UpsertFull(context.Background(), &gVo, &model.GameInstance{
 			Path:    t.Param.Path,
 			Version: defaultVersion(t.Param.Version),
@@ -400,7 +405,7 @@ func mergeItem(
 		aliaSet.Add(a)
 	}
 	for _, t := range i.Tags {
-		if tagSet.Has(t.Name) {
+		if !tagSet.Has(t.Name) {
 			tagSet.Add(t.Name)
 			gVo.Tags = append(gVo.Tags, t)
 		}

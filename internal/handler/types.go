@@ -94,6 +94,7 @@ func Vo2Game(game GameVo) model.Game {
 func Game2Vo(game model.Game, characters []CharacterVo, staff []StaffVo) GameVo {
 	return GameVo{
 		ID:         game.ID,
+		RelIDs:     game.RelIDs,
 		Name:       game.Name,
 		Alias:      game.Alias,
 		Cover:      game.Cover,
@@ -145,6 +146,7 @@ func Vo2Person(staff StaffVo) model.Person {
 func Person2Vo(person model.Person, relation []model.PersonRelation) StaffVo {
 	return StaffVo{
 		ID:       person.ID,
+		RelIDs:   person.RelIDs,
 		Name:     person.Name,
 		Alias:    person.Alias,
 		Cover:    person.Cover,
@@ -194,6 +196,7 @@ func Vo2Character(character CharacterVo) model.Character {
 func Character2Vo(character model.Character, relation model.CharacterRelation, games []CharacterGameVo) CharacterVo {
 	return CharacterVo{
 		ID:           character.ID,
+		RelIDs:       character.RelIDs,
 		Name:         character.Name,
 		Alias:        character.Alias,
 		Gender:       character.Gender,

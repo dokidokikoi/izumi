@@ -324,7 +324,7 @@ func (gg *GGBases) GetItemLink(node *goquery.Document, id string) ([]model.Link,
 			s.Find("a").Each(func(i int, s *goquery.Selection) {
 				url := s.AttrOr("href", "")
 				if url != "" {
-					if !strings.HasPrefix(url, "https:") {
+					if !strings.HasPrefix(url, "http:") {
 						url = "https:" + url
 					}
 					links = append(links, model.Link{

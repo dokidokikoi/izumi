@@ -16,6 +16,8 @@ import (
 
 	"github.com/pkg/errors"
 
+	"izumi/config"
+
 	"github.com/PuerkitoBio/goquery"
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
 	"github.com/dokidokikoi/go-common/tools"
@@ -286,30 +288,25 @@ func (gc *GetChu) GetItemCover(node *goquery.Document, id string) (cover string,
 		for _, url := range urls {
 			path, ok := res[url]
 			if ok {
-				images = append(images, path)
+				if url == cover {
+					cover = strings.TrimPrefix(path, config.TmpDir)
+				} else {
+					images = append(images, strings.TrimPrefix(path, config.TmpDir))
+				}
 			}
-		}
-
-		if len(images) > 0 {
-			cover = images[0]
-			images = images[1:]
 		}
 	}()
 
-	data, err := gc.DoReq(http.MethodGet, fmt.Sprintf(GetChuImage, id), nil, nil)
-	if err != nil {
-		return
-	}
-
-	root, err := goquery.NewDocumentFromReader(bytes.NewBuffer(data))
-	if err != nil {
-		return
-	}
-
-	root.Find(".sample_table_cell").Each(func(i int, s *goquery.Selection) {
-		image := gc.AbsUrl(s.Find("a").AttrOr("href", ""))
-		if image != "" {
-			urls = append(urls, image)
+	node.Find(".tabletitle").Each(func(i int, selection *goquery.Selection) {
+		title, err := tools.Jp2Utf8([]byte(selection.Text()))
+		if err != nil {
+			return
+		}
+		if strings.Contains(title, "サンプル画像") {
+			selection.Next().Find(`div.item-Samplecard`).Each(func(i int, s *goquery.Selection) {
+				image := s.Find("a").AttrOr("href", "")
+				urls = append(urls, gc.AbsUrl(image))
+			})
 		}
 	})
 
@@ -350,35 +347,34 @@ func (gc *GetChu) GetItemCharacter(node *goquery.Document) ([]handler.CharacterV
 					return
 				}
 				avatar, _ := selection.Find("td:nth-child(1) img").Attr("src")
-				name, err := tools.Jp2Utf8([]byte(selection.Find("td:nth-child(2) h2.chara-name charalist").Text()))
+				nameText, err := tools.Jp2Utf8([]byte(selection.Find("dt h4.chara-name").Text()))
 				if err != nil {
 					gc.logger.With(zap.Error(err)).Error("tools.Jp2Utf8")
 				}
-				name = tools.TrimBlankChar(name)
-				nameText, err := tools.Jp2Utf8([]byte(selection.Find("td:nth-child(2) h2.chara-name").Text()))
-				if err != nil {
-					gc.logger.With(zap.Error(err)).Error("tools.Jp2Utf8")
+				alias := ""
+				aliasIdxStart := strings.Index(nameText, "（")
+				aliasIdxEnd := strings.Index(nameText, "）")
+				if aliasIdxStart > 0 && aliasIdxEnd > 0 {
+					alias = tools.TrimBlankChar(nameText[aliasIdxStart+3 : aliasIdxEnd])
 				}
-				if name == "" {
-					name = tools.TrimBlankChar(nameText)
-				}
-				idx := strings.Index(nameText, "CV")
+				CVIdx := strings.Index(nameText, "CV")
 				var s handler.StaffVo
-				if idx > 0 && len(nameText) > idx+5 {
+				if CVIdx > 0 && len(nameText) > CVIdx+5 {
 					s = handler.StaffVo{
-						Name: tools.TrimBlankChar(nameText[idx+5:]),
+						Name: tools.TrimBlankChar(nameText[CVIdx+5:]),
 						Relation: []model.PersonRelation{
 							model.PRelationCV,
 						},
 					}
 					staff = append(staff, s)
 				}
-				startIdx := strings.Index(nameText, "（")
-				endIdx := strings.Index(nameText, "）")
-				alias := ""
-				if startIdx > 0 && endIdx > startIdx {
-					alias = tools.TrimBlankChar(nameText[startIdx+3 : endIdx])
-					name = tools.TrimBlankChar(nameText[:startIdx])
+				name := nameText
+				if aliasIdxStart != -1 && CVIdx != -1 {
+					name = tools.TrimBlankChar(nameText[:min(aliasIdxStart, CVIdx)])
+				} else if aliasIdxStart != -1 {
+					name = tools.TrimBlankChar(nameText[:aliasIdxStart])
+				} else if CVIdx != -1 {
+					name = tools.TrimBlankChar(nameText[:CVIdx])
 				}
 				text, _ := selection.Find("td:nth-child(2) dd").Html()
 				introduction, err := tools.Jp2Utf8([]byte(text))
@@ -386,13 +382,14 @@ func (gc *GetChu) GetItemCharacter(node *goquery.Document) ([]handler.CharacterV
 					gc.logger.With(zap.Error(err)).Error("tools.Jp2Utf8")
 				}
 				introduction = tools.TrimBlankChar(introduction)
-				image, _ := selection.Find("td:nth-child(3) a").Attr("href")
+				image, _ := selection.Find("td a.highslide").Attr("href")
 				characters = append(characters, handler.CharacterVo{
 					Name:    name,
 					Alias:   []string{alias},
 					Summary: introduction,
 					Cover:   gc.AbsUrl(avatar),
 					CV:      s,
+					Images:  []string{gc.AbsUrl(image)},
 				})
 
 				urls = append(urls, gc.AbsUrl(image), gc.AbsUrl(avatar))
@@ -403,12 +400,12 @@ func (gc *GetChu) GetItemCharacter(node *goquery.Document) ([]handler.CharacterV
 			}, urls)
 			for i := range characters {
 				if path, ok := res[characters[i].Cover]; ok {
-					characters[i].Cover = path
+					characters[i].Cover = strings.TrimPrefix(path, config.TmpDir)
 				}
 				var images []string
 				for _, image := range characters[i].Images {
 					if path, ok := res[image]; ok {
-						images = append(images, path)
+						images = append(images, strings.TrimPrefix(path, config.TmpDir))
 					}
 				}
 				characters[i].Images = images

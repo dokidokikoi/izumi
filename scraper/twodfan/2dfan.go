@@ -229,7 +229,7 @@ func (tdf *TwoDFan) GetItemCover(node *goquery.Document) (string, []string, erro
 	imageMap := utils.SaveBunchTmpFile(func(uri string) ([]byte, error) {
 		return tdf.DoReq(http.MethodGet, uri, nil, nil)
 	}, []string{image})
-	return imageMap[image], nil, nil
+	return strings.TrimPrefix(imageMap[image], config.TmpDir), nil, nil
 }
 
 func (tdf *TwoDFan) GetItemCategory(node *goquery.Document) (*model.Category, error) {

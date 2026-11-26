@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+
 	"izumi/db"
 	"izumi/model"
 
@@ -24,6 +25,7 @@ type tag struct {
 
 // 以etag为准，未对齐的tag需要手动对齐
 func (t *tag) CreateL(ctx context.Context, tag *model.Tag) error {
+	tag.ID = 0
 	if tag.NS == "" {
 		tag.NS = model.NS_RECLASS
 	}

@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"izumi/config"
 	"izumi/internal/handler"
 	"izumi/model"
 	"izumi/scraper"
+	"izumi/utils"
 
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
 	"github.com/dokidokikoi/go-common/tools"
@@ -154,6 +156,22 @@ func (v *VNDB) GetGameItem(uri string) (*scraper.GameItem, error) {
 	if len(resp.Result) == 0 {
 		return nil, nil
 	}
+	downloadImg := func(image string) string {
+		imageMap := utils.SaveBunchTmpFile(func(uri string) ([]byte, error) {
+			return v.DoReq(http.MethodGet, uri, nil, nil)
+		}, []string{image})
+		return strings.TrimPrefix(imageMap[image], config.TmpDir)
+	}
+	downloadImgs := func(images []string) []string {
+		imageMap := utils.SaveBunchTmpFile(func(uri string) ([]byte, error) {
+			return v.DoReq(http.MethodGet, uri, nil, nil)
+		}, images)
+		images = images[:0]
+		for _, v := range imageMap {
+			images = append(images, strings.TrimPrefix(v, config.TmpDir))
+		}
+		return images
+	}
 	res := resp.Result[0]
 	item := &scraper.GameItem{
 		GameVo: handler.GameVo{
@@ -177,12 +195,13 @@ func (v *VNDB) GetGameItem(uri string) (*scraper.GameItem, error) {
 				}
 				return alias
 			}(),
-			Cover: res.Image.Url,
+			Cover: downloadImg(res.Image.Url),
 			Images: func() []string {
 				var images []string
 				for _, s := range res.Screenshots {
 					images = append(images, s.Url)
 				}
+				images = downloadImgs(images)
 				return images
 			}(),
 			Brands: func() []*model.Brand {
@@ -277,7 +296,7 @@ func (v *VNDB) GetGameItem(uri string) (*scraper.GameItem, error) {
 							return model.UnKnown
 						}(),
 						Summary: char.Description,
-						Cover:   char.Image.Url,
+						Cover:   downloadImg(char.Image.Url),
 						CV:      Staff2Staff(va.Staff),
 						PersonalInfo: model.PersonalInfo{
 							Age: char.Age,

@@ -2,15 +2,19 @@ package bangumi
 
 import (
 	"fmt"
-	"izumi/internal/handler"
-	"izumi/model"
-	"izumi/scraper"
 	"maps"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"izumi/config"
+	"izumi/internal/handler"
+	"izumi/model"
+	"izumi/scraper"
+	"izumi/utils"
 
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
 	"github.com/dokidokikoi/go-common/tools"
@@ -21,9 +25,7 @@ import (
 
 const Name = "bangumi"
 
-var (
-	DefaultHeader_UserAgent = "dokidokikoi/izumi (https://github.com/dokidokikoi/izumi)"
-)
+var DefaultHeader_UserAgent = "dokidokikoi/izumi (https://github.com/dokidokikoi/izumi)"
 
 var (
 	BangumiDomain        = "https://api.bgm.tv"
@@ -141,7 +143,13 @@ func (b *Bangumi) GetGameItem(uri string) (*scraper.GameItem, error) {
 		return nil, err
 	}
 
-	item := &scraper.GameItem{GameVo: handler.GameVo{Links: []model.Link{{Name: b.name, Url: uri, Type: model.LinkTypeInfo}}}, ScraperName: b.name}
+	id := ""
+	u, _ := url.Parse(uri)
+	if u != nil {
+		arr := strings.Split(u.Path, "/")
+		id = arr[len(arr)-1]
+	}
+	item := &scraper.GameItem{GameVo: handler.GameVo{Links: []model.Link{{Name: b.name, Url: "https://bangumi.tv/subject/" + id, Type: model.LinkTypeSource}}}, ScraperName: b.name}
 	// 获取名称
 	item.Name = gjson.GetBytes(data, "name").String()
 	nameCN := gjson.GetBytes(data, "name_cn").String()
@@ -156,7 +164,11 @@ func (b *Bangumi) GetGameItem(uri string) (*scraper.GameItem, error) {
 	if cover == "" {
 		cover = gjson.GetBytes(data, "images.common").String()
 	}
-	item.Cover = cover
+	coverM := utils.SaveBunchTmpFile(func(url string) ([]byte, error) {
+		return b.DoReq(http.MethodGet, url, nil, nil)
+	}, []string{cover})
+
+	item.Cover = strings.TrimPrefix(coverM[cover], config.TmpDir)
 	item.Story = gjson.GetBytes(data, "summary").String()
 	for _, tag := range gjson.GetBytes(data, "tags").Array() {
 		item.Tags = append(item.Tags, &model.Tag{
@@ -185,7 +197,6 @@ func (b *Bangumi) GetGameItem(uri string) (*scraper.GameItem, error) {
 			})
 		}
 	}
-	id := strconv.Itoa(int(gjson.GetBytes(data, "id").Int()))
 	if id != "" {
 		item.RelIDs = append(item.RelIDs, fmt.Sprintf("%s:%s", Name, id))
 	}
@@ -213,7 +224,6 @@ func (b *Bangumi) GetItemCharacters(SubjetID string) ([]handler.CharacterVo, []h
 	var characters []handler.CharacterVo
 	var staff []handler.StaffVo
 	for _, c := range gjson.ParseBytes(data).Array() {
-		c := c
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
@@ -246,7 +256,11 @@ func (b *Bangumi) GetItemCharacters(SubjetID string) ([]handler.CharacterVo, []h
 					if cover == "" {
 						cover = c.Get("images.common").String()
 					}
-					return cover
+
+					res := utils.SaveBunchTmpFile(func(url string) ([]byte, error) {
+						return b.DoReq(http.MethodGet, url, nil, nil)
+					}, []string{cover})
+					return strings.TrimPrefix(res[cover], config.TmpDir)
 				}(),
 				Gender:  Gender(cc.Get("gender").String()),
 				Summary: cc.Get("summary").String(),
@@ -276,7 +290,10 @@ func (b *Bangumi) GetItemCharacters(SubjetID string) ([]handler.CharacterVo, []h
 						if cover == "" {
 							cover = arr[0].Get("images.common").String()
 						}
-						return cover
+						res := utils.SaveBunchTmpFile(func(url string) ([]byte, error) {
+							return b.DoReq(http.MethodGet, url, nil, nil)
+						}, []string{cover})
+						return strings.TrimPrefix(res[cover], config.TmpDir)
 					}(),
 					Summary:  arr[0].Get("short_summary").String(),
 					Gender:   Gender(ss.Get("gender").String()),
@@ -318,7 +335,10 @@ func (b *Bangumi) GetItemStaff(SubjectID string) ([]handler.StaffVo, error) {
 		if cover == "" {
 			cover = s.Get("images.common").String()
 		}
-		coverM[id] = cover
+		res := utils.SaveBunchTmpFile(func(url string) ([]byte, error) {
+			return b.DoReq(http.MethodGet, url, nil, nil)
+		}, []string{cover})
+		coverM[id] = strings.TrimPrefix(res[cover], config.TmpDir)
 		nameM[id] = s.Get("name").String()
 	}
 	for id, relations := range relationM {

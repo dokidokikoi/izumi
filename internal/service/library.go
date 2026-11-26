@@ -2,17 +2,19 @@ package service
 
 import (
 	"context"
-	"izumi/db"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"izumi/db"
 )
 
 type PathInfo struct {
-	Path  string     `json:"path"`
-	IsDir bool       `json:"is_dir"`
-	Child []PathInfo `json:"child"`
+	Path      string     `json:"path"`
+	IsDir     bool       `json:"is_dir"`
+	IsScraped bool       `json:"is_scraped"`
+	Child     []PathInfo `json:"child"`
 }
 
 type ILibrary interface {
@@ -49,6 +51,7 @@ func (lsrv *library) Ls(ctx context.Context, path string, onlyNoScrap bool, cach
 		if strings.HasPrefix(p.Name(), ".") {
 			continue
 		}
+		isScraped := false
 		child := []PathInfo{}
 		if p.IsDir() {
 			cPaths, err := os.ReadDir(filepath.Join(path, p.Name()))
@@ -58,6 +61,9 @@ func (lsrv *library) Ls(ctx context.Context, path string, onlyNoScrap bool, cach
 			for _, cp := range cPaths {
 				if strings.HasPrefix(cp.Name(), ".") {
 					continue
+				}
+				if !cp.IsDir() && strings.HasSuffix(cp.Name(), ".json") {
+					isScraped = true
 				}
 				child = append(child, PathInfo{
 					Path:  filepath.Join(path, p.Name(), cp.Name()),
@@ -73,9 +79,10 @@ func (lsrv *library) Ls(ctx context.Context, path string, onlyNoScrap bool, cach
 			})
 		}
 		result = append(result, PathInfo{
-			Path:  filepath.Join(path, p.Name()),
-			IsDir: p.IsDir(),
-			Child: child,
+			Path:      filepath.Join(path, p.Name()),
+			IsDir:     p.IsDir(),
+			Child:     child,
+			IsScraped: isScraped,
 		})
 	}
 

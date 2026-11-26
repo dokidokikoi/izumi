@@ -2,9 +2,10 @@ package service
 
 import (
 	"context"
+	"time"
+
 	"izumi/db"
 	"izumi/model"
-	"time"
 
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
 	gocache "github.com/patrickmn/go-cache"
@@ -18,7 +19,7 @@ var (
 )
 
 func StartLibraryCache() {
-	ticker := time.NewTicker(time.Hour)
+	ticker := time.NewTicker(time.Hour * 24)
 	db := db.GetStore()
 	srv := NewLibrary(db)
 

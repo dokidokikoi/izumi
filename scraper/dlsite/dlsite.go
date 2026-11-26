@@ -7,15 +7,18 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"izumi/config"
 	"izumi/internal/handler"
 	"izumi/model"
 	"izumi/scraper"
+	"izumi/utils"
 
 	"github.com/PuerkitoBio/goquery"
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
@@ -100,15 +103,29 @@ func (ds *DlSite) SearchGame(keyword string, page int) ([]*scraper.SearchItem, e
 
 	var items []*scraper.SearchItem
 	root.Find("#search_result_list table.n_worklist tr").Each(func(i int, s *goquery.Selection) {
-		url := s.Find("div.work_thumb a img").First().AttrOr("src", "")
-		if url == "" {
-			url = s.Find("div.work_thumb a img").First().AttrOr("data-src", "")
+		url := s.Find("div.work_thumb img").First().AttrOr(":src", "")
+		idxs := []int{}
+		for i := range url {
+			if url[i] == '\'' {
+				idxs = append(idxs, i)
+			}
 		}
-		if url != "" && !strings.HasPrefix(url, "https:") {
+		for i := 0; i < len(idxs); i += 2 {
+			if idxs[i]+3 >= len(url) {
+				break
+			}
+			if url[idxs[i]+1:idxs[i]+3] == "//" {
+				url = url[idxs[i]+1 : idxs[i+1]]
+			}
+		}
+
+		if url != "" && strings.Contains(url, "//") {
 			url = "https:" + strings.TrimSpace(url)
+		} else {
+			url = ""
 		}
 		items = append(items, &scraper.SearchItem{
-			Name:  s.Find("dt.work_name a").AttrOr("title", ""),
+			Name:  s.Find("dt.work_name a").Text(),
 			URl:   s.Find("dt.work_name a").First().AttrOr("href", ""),
 			Cover: url,
 
@@ -186,7 +203,8 @@ func (ds *DlSite) GetGameItem(uri string) (*scraper.GameItem, error) {
 	if err != nil {
 		ds.logger.Error("获取角色失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))
 	}
-	item.Story, err = ds.GetItemStory(root)
+	var images []string
+	item.Story, images, err = ds.GetItemStory(root)
 	if err != nil {
 		ds.logger.Error("获取故事失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))
 	}
@@ -196,43 +214,58 @@ func (ds *DlSite) GetGameItem(uri string) (*scraper.GameItem, error) {
 	}
 	item.Links = append(item.Links, links...)
 
-	nameSet := map[string]int{}
-	addStaffNameF := func(text string, rs []model.PersonRelation) {
-		names := strings.Split(text, "/")
-		for _, name := range names {
-			name = tools.TrimBlankChar(name)
-			if idx, ok := nameSet[name]; ok {
-				item.Staff[idx].Relation = append(item.Staff[idx].Relation, model.PRelationWriter)
-			} else {
-				item.Staff = append(item.Staff, handler.StaffVo{
-					Name:     name,
-					Relation: rs,
-				})
-			}
+	cImageSet := tools.NewSet[string]()
+	for _, char := range item.Characters {
+		cImageSet.Add(char.Images...)
+	}
+	for _, image := range images {
+		if !cImageSet.Has(image) {
+			item.Images = append(item.Images, images...)
 		}
 	}
-	root.Find("#work_outline tr").Each(func(i int, s *goquery.Selection) {
-		label := s.Find("th").Text()
+
+	nameSet := map[string]int{}
+	for i, s := range item.Staff {
+		nameSet[s.Name] = i
+	}
+	addStaffNameF := func(text string, rs []model.PersonRelation) {
+		idx := strings.Index(text, "(")
+		if idx > 0 {
+			text = text[:idx]
+		}
+		name := tools.TrimBlankChar(text)
+		if idx, ok := nameSet[name]; ok {
+			item.Staff[idx].Relation = append(item.Staff[idx].Relation, model.PRelationWriter)
+		} else {
+			item.Staff = append(item.Staff, handler.StaffVo{
+				Name:     name,
+				Relation: rs,
+			})
+		}
+	}
+
+	root.Find("div.c-productInfoPc > dl div.c-productInfo__item").Each(func(i int, s *goquery.Selection) {
+		label := tools.TrimBlankChar(s.Find("dt").Text())
 		if slices.Contains([]string{"贩卖日", "販売日", "发售日"}, label) {
-			item.IssueDate = tools.Str2Time(s.Find("td").First().Text())
+			item.IssueDate = tools.Str2Time(s.Find("dd a").First().Text())
 		} else if slices.Contains([]string{"剧情", "シナリオ"}, label) {
-			s.Find("td").First().Each(func(i int, s *goquery.Selection) {
-				addStaffNameF(s.Text(), []model.PersonRelation{model.PRelationWriter})
+			s.Find("dd span").Each(func(i int, s *goquery.Selection) {
+				addStaffNameF(s.Find("a").First().Text(), []model.PersonRelation{model.PRelationWriter})
 			})
 		} else if slices.Contains([]string{"插画", "イラスト"}, label) {
-			s.Find("td").First().Find("a").Each(func(i int, s *goquery.Selection) {
-				addStaffNameF(s.Text(), []model.PersonRelation{model.PRelationPainter})
+			s.Find("dd span").Each(func(i int, s *goquery.Selection) {
+				addStaffNameF(s.Find("a").First().Text(), []model.PersonRelation{model.PRelationPainter})
 			})
 		} else if slices.Contains([]string{"声优", "声優"}, label) {
-			s.Find("td").First().Find("a").Each(func(i int, s *goquery.Selection) {
-				addStaffNameF(s.Text(), []model.PersonRelation{model.PRelationCV})
+			s.Find("dd span").Each(func(i int, s *goquery.Selection) {
+				addStaffNameF(s.Find("a").First().Text(), []model.PersonRelation{model.PRelationCV})
 			})
 		} else if slices.Contains([]string{"音乐", "音楽"}, label) {
-			s.Find("td").First().Find("a").Each(func(i int, s *goquery.Selection) {
-				addStaffNameF(s.Text(), []model.PersonRelation{model.PRelationMusic})
+			s.Find("dd span").Each(func(i int, s *goquery.Selection) {
+				addStaffNameF(s.Find("a").First().Text(), []model.PersonRelation{model.PRelationMusic})
 			})
-		} else {
-			s.Find("td").First().Find("a").Each(func(i int, s *goquery.Selection) {
+		} else if slices.Contains([]string{"分类"}, label) {
+			s.Find("dd a").Each(func(i int, s *goquery.Selection) {
 				item.Tags = append(item.Tags, &model.Tag{
 					Name: tools.TrimBlankChar(s.Text()),
 				})
@@ -263,13 +296,21 @@ func (ds *DlSite) GetGameItem(uri string) (*scraper.GameItem, error) {
 
 func (ds *DlSite) GetItemCover(node *goquery.Document) (string, []string, error) {
 	images := []string{}
-	node.Find("div.product-slider div.product-slider-data div").Each(func(i int, s *goquery.Selection) {
-		url := strings.TrimSpace(s.AttrOr("data-src", ""))
+	node.Find("#work_visual div.work_slider div.keen-slider__slide").Each(func(i int, s *goquery.Selection) {
+		url := strings.TrimSpace(s.Find("img").AttrOr("src", ""))
 		if !strings.HasPrefix(url, "https:") {
 			url = "https:" + strings.TrimSpace(url)
 		}
 		images = append(images, url)
 	})
+
+	res := utils.SaveBunchTmpFile(func(url string) ([]byte, error) {
+		return ds.DoReq(http.MethodGet, url, nil, nil)
+	}, images)
+	images = images[:0]
+	for _, v := range res {
+		images = append(images, v)
+	}
 	if len(images) < 1 {
 		return "", nil, nil
 	}
@@ -277,18 +318,45 @@ func (ds *DlSite) GetItemCover(node *goquery.Document) (string, []string, error)
 }
 
 func (ds *DlSite) GetItemBrands(node *goquery.Document) ([]*model.Brand, error) {
-	return []*model.Brand{
-		{Name: tools.TrimBlankChar(node.Find("#work_maker span.maker_name").Text())},
-	}, nil
+	brands := []*model.Brand{}
+	node.Find("div.c-productInfoPc dl").First().Each(func(i int, s *goquery.Selection) {
+		title := s.Find("dt").Text()
+		if strings.Contains(title, "品牌名") {
+			brands = append(brands, &model.Brand{
+				Name: tools.TrimBlankChar(s.Find("dd a.c-productInfo__makerName").Text()),
+			})
+		}
+	})
+	return brands, nil
 }
 
-func (ds *DlSite) GetItemStory(node *goquery.Document) (string, error) {
-	story, err := node.Find("div.work_parts_container").Html()
+func (ds *DlSite) GetItemStory(node *goquery.Document) (string, []string, error) {
+	story, err := node.Find("div.c-productInfo__inner").Html()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
-	return tools.TrimBlankChar(story), nil
+	images := []string{}
+	node.Find("div.c-productInfo__inner img").Each(func(i int, s *goquery.Selection) {
+		image := s.AttrOr("src", "")
+		if image != "" {
+			if !strings.HasSuffix(image, "https") {
+				image = "https:" + image
+			}
+			images = append(images, image)
+		}
+	})
+
+	res := utils.SaveBunchTmpFile(func(url string) ([]byte, error) {
+		return ds.DoReq(http.MethodGet, url, nil, nil)
+	}, images)
+	images = images[:0]
+	for k, v := range res {
+		images = append(images, strings.TrimPrefix(v, config.TmpDir))
+		story = strings.ReplaceAll(story, strings.TrimPrefix(k, "https:"), filepath.Join("/api/file", strings.TrimPrefix(v, config.TmpDir)))
+	}
+
+	return tools.TrimBlankChar(story), images, nil
 }
 
 func (ds *DlSite) GetItemlink(node *goquery.Document, id string) ([]model.Link, error) {
@@ -327,47 +395,57 @@ func (ds *DlSite) GetItemlink(node *goquery.Document, id string) ([]model.Link, 
 func (ds *DlSite) GetItemCharacter(node *goquery.Document) ([]handler.CharacterVo, []handler.StaffVo, error) {
 	characters := []handler.CharacterVo{}
 	staff := []handler.StaffVo{}
-	node.Find("div.work_parts_container div.work_parts.type_multiimages .work_parts_area .work_parts_multiimage li.work_parts_multiimage_item").Each(func(i int, s *goquery.Selection) {
-		url := strings.TrimSpace(s.Find(".image a").AttrOr("href", ""))
-		if !strings.HasPrefix(url, "https:") {
-			url = "https:" + url
-		}
-		text, _ := s.Find(".text").Html()
-		idx := strings.Index(text, "●")
-		name := bytes.Buffer{}
-		if idx > -1 {
-			idx += 3
-			for ; idx < len(text)-3; idx++ {
-				if text[idx:idx+3] == "（" || text[idx:idx+3] == "<br" {
-					break
-				}
-				name.WriteByte(text[idx])
-			}
-		}
-		cName := tools.TrimBlankChar(name.String())
 
-		idx = strings.Index(text, "（CV：")
-		name.Reset()
-		if idx > -1 {
-			idx += 8
-			for ; idx < len(text)-3; idx++ {
-				if text[idx:idx+3] == "）" {
-					break
-				}
-				name.WriteByte(text[idx])
-			}
+	node.Find("div.c-productInfo__inner section.c-productContent").Each(func(i int, s *goquery.Selection) {
+		title := tools.TrimBlankChar(s.Find("h3.headline__title").Text())
+		if !slices.Contains([]string{"登場キャラクター", "登場人物"}, title) {
+			return
 		}
-		characters = append(characters, handler.CharacterVo{
-			Name:    cName,
-			Cover:   url,
-			Summary: tools.TrimBlankChar(text),
-			CV: handler.StaffVo{
-				Name: tools.TrimBlankChar(name.String()),
-			},
-		})
-		staff = append(staff, handler.StaffVo{
-			Name:     tools.TrimBlankChar(name.String()),
-			Relation: []model.PersonRelation{model.PRelationCV},
+		s.Find("ul li").Each(func(i int, s *goquery.Selection) {
+			url := strings.TrimSpace(s.Find("picture img").AttrOr("src", ""))
+			if !strings.HasPrefix(url, "https:") {
+				url = "https:" + url
+			}
+			text, _ := s.Find("div.c-productContent__text").Html()
+			idx := strings.Index(text, "●")
+			name := bytes.Buffer{}
+			if idx > -1 {
+				idx += 3
+				for ; idx < len(text)-3; idx++ {
+					if text[idx:idx+3] == "（" || text[idx:idx+3] == "<br" {
+						break
+					}
+					name.WriteByte(text[idx])
+				}
+			}
+			cName := tools.TrimBlankChar(name.String())
+
+			idx = strings.Index(text, "（CV：")
+			name.Reset()
+			if idx > -1 {
+				idx += 8
+				for ; idx < len(text)-3; idx++ {
+					if text[idx:idx+3] == "）" {
+						break
+					}
+					name.WriteByte(text[idx])
+				}
+			}
+			character := handler.CharacterVo{
+				Name:    cName,
+				Cover:   url,
+				Summary: tools.TrimBlankChar(text),
+			}
+			if name.Len() > 0 {
+				character.CV = handler.StaffVo{
+					Name: tools.TrimBlankChar(name.String()),
+				}
+				staff = append(staff, handler.StaffVo{
+					Name:     tools.TrimBlankChar(name.String()),
+					Relation: []model.PersonRelation{model.PRelationCV},
+				})
+			}
+			characters = append(characters, character)
 		})
 	})
 

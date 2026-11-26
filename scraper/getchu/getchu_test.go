@@ -3,13 +3,14 @@ package getchu_test
 import (
 	"bytes"
 	"fmt"
+	"net/http"
+	"os"
+	"testing"
+
 	"izumi/config"
 	"izumi/scraper/getchu"
 
 	"izumi/utils"
-	"net/http"
-	"os"
-	"testing"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/dokidokikoi/go-common/tools"
@@ -48,7 +49,7 @@ func TestGetItem(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%+v\n", item)
+	fmt.Printf("%+v\n", item.Images)
 }
 
 func TestGetItemName(t *testing.T) {

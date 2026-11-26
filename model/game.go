@@ -43,8 +43,8 @@ type DownloadInfo struct {
 }
 
 type GameInstance struct {
-	ID        uint `gorm:"primaryKey" json:"id"`
-	GameID    uint
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	GameID    uint      `gorm:"uniqueIndex:uk_game_version" json:"game_id"`
 	Version   string    `gorm:"uniqueIndex:uk_game_version;type:varchar(100)" json:"version"`
 	Path      string    `gorm:"index:idx_game_path;type:varchar(255)" json:"path"`
 	Size      int64     `json:"size"`

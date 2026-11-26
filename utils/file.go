@@ -6,12 +6,13 @@ import (
 	"net/url"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"izumi/config"
 
 	"github.com/pkg/errors"
+	"golang.org/x/sync/errgroup"
 
-	"github.com/dokidokikoi/go-common/gopool"
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
 	"github.com/dokidokikoi/go-common/tools"
 	"go.uber.org/zap"
@@ -25,12 +26,10 @@ func SaveBunchTmpFile(fn func(uri string) ([]byte, error), urls []string) map[st
 	res := map[string]string{}
 
 	var lock sync.Mutex
-	wait := sync.WaitGroup{}
+	group := errgroup.Group{}
+	group.SetLimit(3)
 	for _, uri := range urls {
-		wait.Add(1)
-		gopool.Go(func() {
-			defer wait.Done()
-
+		group.Go(func() (err error) {
 			u, err := url.Parse(uri)
 			if err != nil {
 				zaplog.L().Error("parse url error", zap.String("url", uri), zap.Error(err))
@@ -39,11 +38,12 @@ func SaveBunchTmpFile(fn func(uri string) ([]byte, error), urls []string) map[st
 			cnt := 0
 			var data []byte
 			err = errors.New("fetch file")
-			for err != nil && cnt < 10 {
+			for err != nil && cnt < 3 {
 				cnt++
 				data, err = fn(uri)
 				if err != nil {
 					zaplog.L().Error("fetch file error", zap.Int("retry", cnt), zap.String("url", uri), zap.Error(err))
+					time.Sleep(time.Millisecond * 500)
 				}
 			}
 			if err != nil {
@@ -56,9 +56,10 @@ func SaveBunchTmpFile(fn func(uri string) ([]byte, error), urls []string) map[st
 			if err != nil {
 				zaplog.L().Error("fetch file failed", zap.String("url", uri), zap.Error(err))
 			}
+			return
 		})
 	}
-	wait.Wait()
+	group.Wait()
 
 	return res
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,6 +83,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 	// 保存游戏分类
 	{
 		if gVo.Category != nil && gVo.Category.Name != "" {
+			gVo.ID = 0
 			c, err := db.Category().Get(ctx, &model.Category{Name: gVo.Category.Name}, &meta.GetOption{Include: []string{"ID"}})
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
@@ -114,9 +116,11 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 				return err
 			}
 		}
+		gVo.ID = g.ID
 	}
 	// 保存游戏实例信息
 	if gIns != nil {
+		gIns.ID = 0
 		gIns.GameID = g.ID
 		i, err := db.GameInstance().Get(ctx, &model.GameInstance{GameID: g.ID, Version: gIns.Version}, &meta.GetOption{Include: []string{"ID"}})
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -139,6 +143,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 	if len(gVo.Brands) > 0 {
 		gameBrands := []*model.GameBrands{}
 		for _, brand := range gVo.Brands {
+			brand.ID = 0
 			b, err := db.Brand().Get(ctx, &model.Brand{Name: brand.Name}, &meta.GetOption{Include: []string{"ID"}})
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
@@ -179,6 +184,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 	if len(gVo.Series) > 0 {
 		gameSeries := []*model.GameSeries{}
 		for _, series := range gVo.Series {
+			series.ID = 0
 			s, err := db.Series().Get(ctx, &model.Series{Name: series.Name}, &meta.GetOption{Include: []string{"ID"}})
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
@@ -252,6 +258,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 	if len(gVo.Staff) > 0 {
 		gameStaff := []*model.GameStaff{}
 		for _, staff := range gVo.Staff {
+			staff.ID = 0
 			if len(staff.RelIDs) > 0 {
 				persons, err := db.Person().ListComplex(
 					ctx,
@@ -319,6 +326,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 	if len(gVo.Characters) > 0 {
 		gameCharacters := []*model.GameCharacter{}
 		for _, char := range gVo.Characters {
+			char.ID = 0
 			if len(char.RelIDs) > 0 {
 				cs, err := db.Character().ListComplex(ctx, &model.Character{}, &meta.WhereNode{Conditions: []*meta.Condition{
 					{
@@ -341,7 +349,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 				c.PersonID = staffM[char.CV.Name]
 			}
 			omits := []string{clause.Associations}
-			if char.CV.ID == 0 {
+			if c.PersonID == 0 {
 				omits = append(omits, "PersonID")
 			}
 			if char.ID != 0 {
@@ -786,6 +794,9 @@ func (gsrv *game) SaveFiles(ctx context.Context, g *handler.GameVo, process ...f
 	zaplog.L().Debug("images", zap.Any("data", images))
 	zaplog.L().Debug("dir", zap.Any("name", config.DataDir))
 	for _, image := range images {
+		if !strings.HasPrefix(image, config.TmpDir) {
+			image = filepath.Join(config.TmpDir, image)
+		}
 		err := tools.Cp(image, filepath.Join(config.DataDir, utils.GetFileName(image)))
 		if err != nil && !errors.Is(err, os.ErrExist) {
 			zaplog.L().Error("rename file error", zap.String("file path", image), zap.Error(err))

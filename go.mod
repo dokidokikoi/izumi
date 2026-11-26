@@ -7,7 +7,7 @@ toolchain go1.24.4
 require (
 	github.com/PuerkitoBio/goquery v1.10.3
 	github.com/abadojack/whatlanggo v1.0.1
-	github.com/dokidokikoi/go-common v0.0.0-20261121112244-9c48f3417685
+	github.com/dokidokikoi/go-common v0.0.0-20261126114728-5c8d15fce5e5
 	github.com/gin-gonic/gin v1.8.2
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.12.3

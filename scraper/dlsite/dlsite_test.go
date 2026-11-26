@@ -44,7 +44,7 @@ func TestSearch(t *testing.T) {
 }
 
 func TestGetItemCover(t *testing.T) {
-	data, err := dlSiteScraper.DoReq(http.MethodGet, "https://www.dlsite.com/pro/work/=/product_id/VJ01001190.html", nil, nil)
+	data, err := dlSiteScraper.DoReq(http.MethodGet, "https://www.dlsite.com/pro/work/=/product_id/VJ01001190.html?locale=zh_CN", nil, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -89,11 +89,12 @@ func TestGetItemStory(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	story, err := dlSiteScraper.GetItemStory(root)
+	story, images, err := dlSiteScraper.GetItemStory(root)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println(story)
+	fmt.Println(images)
 }
 
 func TestGetItemlinks(t *testing.T) {
@@ -120,7 +121,7 @@ func TestGetItem(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%+v", item)
+	fmt.Printf("%+v", item.Tags)
 }
 
 func TestReq(t *testing.T) {
