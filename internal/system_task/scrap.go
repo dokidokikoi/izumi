@@ -13,7 +13,9 @@ import (
 	"izumi/internal/service"
 	"izumi/model"
 	"izumi/scraper"
+	"izumi/scraper/bangumi"
 	"izumi/scraper/dlsite"
+	"izumi/scraper/getchu"
 	"izumi/scraper/twodfan"
 	"izumi/scraper/vndb"
 	"izumi/utils"
@@ -24,7 +26,6 @@ import (
 	"github.com/dokidokikoi/go-common/notice"
 	"github.com/dokidokikoi/go-common/tools"
 	"github.com/google/uuid"
-	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -241,13 +242,6 @@ func AutoScrap(t *model.SystemTask) {
 			}
 		}()
 
-		// vndb 是数据合并的主源，必须存在
-		if !containsScraper(t.Param.ScrapObjs, vndb.Name) {
-			result = "auto scrap need vndb item"
-			err = errors.New(result)
-			return
-		}
-
 		prog := newProgress(t.ID)
 		prog.start()
 		defer prog.finish()
@@ -285,7 +279,7 @@ func AutoScrap(t *model.SystemTask) {
 		}
 		gVo, ok := mergeScrapResults(itemM)
 		if !ok {
-			result = "vndb item scrap failed"
+			result = "item scrap failed"
 			return
 		}
 		prog.add(weightMerge) // 合并阶段无子项回调，整体完成后一次性推进
@@ -342,16 +336,46 @@ func groupScrapItems(list []*model.Task) (map[string][]scraper.GameItem, error) 
 	return itemM, nil
 }
 
-// mergeScrapResults 以 vndb 为主源，合并其它来源的别名、标签、图片、角色、制作人员等信息。
-// 第二个返回值表示是否拿到有效的 vndb 数据。
+// mergeScrapReults 合并其它来源的别名、标签、图片、角色、制作人员等信息。
+// 第二个返回值表示是否拿到有效的数据。
 func mergeScrapResults(itemM map[string][]scraper.GameItem) (handler.GameVo, bool) {
-	items, ok := itemM[vndb.Name]
-	if !ok || len(items) == 0 {
+	var gVo *handler.GameVo
+	for _, name := range []string{vndb.Name, bangumi.Name, dlsite.Name, getchu.Name, twodfan.Name} {
+		items, ok := itemM[name]
+		if ok && len(items) > 0 {
+			gVo = &items[0].GameVo
+			itemM[name] = itemM[name][1:]
+			break
+		}
+	}
+	if gVo == nil {
 		return handler.GameVo{}, false
 	}
-	delete(itemM, vndb.Name)
 
-	gVo := items[0].GameVo
+	staff := []handler.StaffVo{}
+	characters := []handler.CharacterVo{}
+	relIDSet := tools.NewSet[string]()
+	for _, c := range gVo.Characters {
+		if len(c.RelIDs) == 0 {
+			characters = append(characters, c)
+			continue
+		}
+		if !relIDSet.Has(c.RelIDs[0]) {
+			characters = append(characters, c)
+			relIDSet.Add(c.RelIDs[0])
+		}
+	}
+	for _, s := range gVo.Staff {
+		if len(s.RelIDs) == 0 {
+			staff = append(staff, s)
+			continue
+		}
+		if !relIDSet.Has(s.RelIDs[0]) {
+			staff = append(staff, s)
+			relIDSet.Add(s.RelIDs[0])
+		}
+	}
+	gVo.Characters, gVo.Staff = characters, staff
 
 	// 建立名称（小写去空格）到下标的索引，用于跨来源匹配角色 / 制作人员
 	aliaSet := tools.NewSet(gVo.Alias...)
@@ -364,7 +388,7 @@ func mergeScrapResults(itemM map[string][]scraper.GameItem) (handler.GameVo, boo
 
 	for _, item := range itemM {
 		for _, i := range item {
-			mergeItem(&gVo, i, aliaSet, tagSet, nameIdx, staffIdx)
+			mergeItem(gVo, i, aliaSet, tagSet, nameIdx, staffIdx)
 		}
 	}
 	gVo.Alias = aliaSet.Slice()
@@ -387,11 +411,21 @@ func mergeScrapResults(itemM map[string][]scraper.GameItem) (handler.GameVo, boo
 		gVo.Story = s
 	}
 
+	links := []model.Link{}
+	linkSet := tools.NewSet[string]()
+	for _, link := range gVo.Links {
+		if !linkSet.Has(link.Url) {
+			linkSet.Add(link.Url)
+			links = append(links, link)
+		}
+	}
+	gVo.Links = links
+
 	// 仅保留有明确职责关系的制作人员
 	gVo.Staff = filterRelatedStaff(gVo.Staff)
 	gVo.Images = tools.NewSet(gVo.Images...).Slice()
 	gVo.RelIDs = tools.NewSet(gVo.RelIDs...).Slice()
-	return gVo, true
+	return *gVo, true
 }
 
 // mergeItem 把单个其它来源的数据合并进主 GameVo。
@@ -435,52 +469,69 @@ func mergeItem(
 
 // mergeCharacter 把单个角色并入主 GameVo：能唯一匹配则补全字段，否则作为新角色追加。
 func mergeCharacter(gVo *handler.GameVo, c handler.CharacterVo, idx *matchIndex) {
-	name := utils.ToLowerNoSpace(c.Name)
-	if m, ok := idx.get(name); ok && len(m) == 1 {
-		for k := range m {
-			gVo.Characters[k].RelIDs = append(gVo.Characters[k].RelIDs, c.RelIDs...)
-			gVo.Characters[k].Images = append(gVo.Characters[k].Images, c.Images...)
-			if c.Cover != "" {
-				gVo.Characters[k].Images = append(gVo.Characters[k].Images, c.Cover)
-			}
-			if gVo.Characters[k].Gender == model.UnKnown {
-				gVo.Characters[k].Gender = c.Gender
-			}
-			if gVo.Characters[k].Rlation == "" {
-				gVo.Characters[k].Rlation = c.Rlation
-			}
-			mergeStory(&gVo.Characters[k].Summary, c.Summary)
-		}
-		return
+	names := []string{utils.ToLowerNoSpace(c.Name)}
+	for _, alias := range c.Alias {
+		names = append(names, utils.ToLowerNoSpace(alias))
 	}
-	idx.addNew(name, len(gVo.Characters))
+
+	for _, name := range names {
+		if m, ok := idx.get(name); ok && len(m) >= 1 {
+			for k := range m {
+				gVo.Characters[k].RelIDs = append(gVo.Characters[k].RelIDs, c.RelIDs...)
+				gVo.Characters[k].Images = append(gVo.Characters[k].Images, c.Images...)
+				if c.Cover != "" {
+					gVo.Characters[k].Images = append(gVo.Characters[k].Images, c.Cover)
+				}
+				if gVo.Characters[k].Gender == model.UnKnown {
+					gVo.Characters[k].Gender = c.Gender
+				}
+				if gVo.Characters[k].Rlation == "" {
+					gVo.Characters[k].Rlation = c.Rlation
+				}
+				mergeStory(&gVo.Characters[k].Summary, c.Summary)
+			}
+			return
+		}
+	}
+	for _, name := range names {
+		idx.addNew(name, len(gVo.Characters))
+	}
 	gVo.Characters = append(gVo.Characters, c)
 }
 
 // mergeStaff 把单个制作人员并入主 GameVo：能唯一匹配则补全字段，否则作为新制作人员追加。
 func mergeStaff(gVo *handler.GameVo, s handler.StaffVo, idx *matchIndex) {
-	name := utils.ToLowerNoSpace(s.Name)
-	if m, ok := idx.get(name); ok && len(m) == 1 {
-		for k := range m {
-			gVo.Staff[k].RelIDs = append(gVo.Staff[k].RelIDs, s.RelIDs...)
-			if gVo.Staff[k].Cover == "" {
-				gVo.Staff[k].Cover = s.Cover
-			} else if s.Cover != "" {
-				gVo.Staff[k].Images = append(gVo.Staff[k].Images, s.Cover)
-			}
-			gVo.Staff[k].Images = append(gVo.Staff[k].Images, s.Images...)
-			gVo.Staff[k].Links = append(gVo.Staff[k].Links, s.Links...)
-			if gVo.Staff[k].Gender == model.UnKnown {
-				gVo.Staff[k].Gender = s.Gender
-			}
-			if len(gVo.Staff[k].Relation) == 0 {
-				gVo.Staff[k].Relation = s.Relation
-			}
-			mergeStory(&gVo.Staff[k].Summary, s.Summary)
-		}
-		return
+	names := []string{utils.ToLowerNoSpace(s.Name)}
+	for _, alias := range s.Alias {
+		names = append(names, utils.ToLowerNoSpace(alias))
 	}
-	idx.addNew(name, len(gVo.Staff))
+
+	for _, name := range names {
+		if m, ok := idx.get(name); ok && len(m) >= 1 {
+			for k := range m {
+				gVo.Staff[k].RelIDs = append(gVo.Staff[k].RelIDs, s.RelIDs...)
+				if gVo.Staff[k].Cover == "" {
+					gVo.Staff[k].Cover = s.Cover
+				} else if s.Cover != "" {
+					gVo.Staff[k].Images = append(gVo.Staff[k].Images, s.Cover)
+				}
+				gVo.Staff[k].Images = append(gVo.Staff[k].Images, s.Images...)
+				gVo.Staff[k].Links = append(gVo.Staff[k].Links, s.Links...)
+				if gVo.Staff[k].Gender == model.UnKnown {
+					gVo.Staff[k].Gender = s.Gender
+				}
+				if len(gVo.Staff[k].Relation) == 0 {
+					gVo.Staff[k].Relation = s.Relation
+				}
+				mergeStory(&gVo.Staff[k].Summary, s.Summary)
+			}
+			return
+		}
+	}
+
+	for _, name := range names {
+		idx.addNew(name, len(gVo.Staff))
+	}
 	gVo.Staff = append(gVo.Staff, s)
 }
 

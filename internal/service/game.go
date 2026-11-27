@@ -58,13 +58,6 @@ type game struct {
 
 func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *model.GameInstance, proccess func(step int)) error {
 	var err error
-	// err := gsrv.SaveFiles(ctx, gVo, func(total int) {
-	// 	step := 4000 / total
-	// 	proccess(step)
-	// })
-	// if err != nil {
-	// 	return err
-	// }
 
 	db := gsrv.store
 
@@ -292,6 +285,7 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 					return err
 				}
 			}
+			staffM[s.Name] = s.ID
 			pRelationM := tools.NewSet(staff.Relation...)
 			if pRelationM.Contains(model.PRelationUnknown) && pRelationM.Size() > 1 {
 				pRelationM.Remove(model.PRelationUnknown)
@@ -303,23 +297,22 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 				GameID:    g.ID,
 				Relations: staff.Relation,
 			})
-			tx := db.Transaction().Begin()
-			err := tx.GameStaff().Delete(ctx, &model.GameStaff{GameID: g.ID}, nil)
-			if err != nil {
-				tx.Transaction().Rollback()
-				return err
-			}
-			err = tx.GameStaff().Creates(ctx, gameStaff, nil)
-			if err != nil {
-				tx.Transaction().Rollback()
-				return err
-			}
-			err = tx.Transaction().Commit()
-			if err != nil {
-				tx.Transaction().Rollback()
-				return err
-			}
-			staffM[s.Name] = s.ID
+		}
+		tx := db.Transaction().Begin()
+		err := tx.GameStaff().Delete(ctx, &model.GameStaff{GameID: g.ID}, nil)
+		if err != nil {
+			tx.Transaction().Rollback()
+			return err
+		}
+		err = tx.GameStaff().Creates(ctx, gameStaff, nil)
+		if err != nil {
+			tx.Transaction().Rollback()
+			return err
+		}
+		err = tx.Transaction().Commit()
+		if err != nil {
+			tx.Transaction().Rollback()
+			return err
 		}
 	}
 	// 保存游戏角色
@@ -368,22 +361,22 @@ func (gsrv *game) UpsertFull(ctx context.Context, gVo *handler.GameVo, gIns *mod
 				GameID:      g.ID,
 				Relation:    char.Rlation,
 			})
-			tx := db.Transaction().Begin()
-			err := tx.GameCharacter().Delete(ctx, &model.GameCharacter{GameID: g.ID}, nil)
-			if err != nil {
-				tx.Transaction().Rollback()
-				return err
-			}
-			err = tx.GameCharacter().Creates(ctx, gameCharacters, nil)
-			if err != nil {
-				tx.Transaction().Rollback()
-				return err
-			}
-			err = tx.Transaction().Commit()
-			if err != nil {
-				tx.Transaction().Rollback()
-				return err
-			}
+		}
+		tx := db.Transaction().Begin()
+		err := tx.GameCharacter().Delete(ctx, &model.GameCharacter{GameID: g.ID}, nil)
+		if err != nil {
+			tx.Transaction().Rollback()
+			return err
+		}
+		err = tx.GameCharacter().Creates(ctx, gameCharacters, nil)
+		if err != nil {
+			tx.Transaction().Rollback()
+			return err
+		}
+		err = tx.Transaction().Commit()
+		if err != nil {
+			tx.Transaction().Rollback()
+			return err
 		}
 	}
 

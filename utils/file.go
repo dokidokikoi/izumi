@@ -29,6 +29,9 @@ func SaveBunchTmpFile(fn func(uri string) ([]byte, error), urls []string) map[st
 	group := errgroup.Group{}
 	group.SetLimit(3)
 	for _, uri := range urls {
+		if uri == "" {
+			continue
+		}
 		group.Go(func() (err error) {
 			u, err := url.Parse(uri)
 			if err != nil {
