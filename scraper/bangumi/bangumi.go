@@ -8,19 +8,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"izumi/config"
 	"izumi/internal/handler"
 	"izumi/model"
 	"izumi/scraper"
+	"izumi/scraper/httpx"
 	"izumi/utils"
 
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
 	"github.com/dokidokikoi/go-common/tools"
-	"github.com/pkg/errors"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 const Name = "bangumi"
@@ -56,9 +56,13 @@ type Bangumi struct {
 	Headers   map[string]string
 	Proxy     string
 	logger    *zap.Logger
+	http      *httpx.Client
 }
 
 func NewBangumi(header map[string]string, proxy string) scraper.IGameScraper {
+	if header == nil {
+		header = map[string]string{}
+	}
 	return &Bangumi{
 		name:      Name,
 		Domain:    BangumiDomain,
@@ -66,6 +70,7 @@ func NewBangumi(header map[string]string, proxy string) scraper.IGameScraper {
 		Headers:   header,
 		Proxy:     proxy,
 		logger:    zaplog.L().Named(Name),
+		http:      httpx.New(Name, proxy),
 	}
 }
 
@@ -83,6 +88,7 @@ func (b *Bangumi) SetProxy(proxy string) {
 	b.Lock()
 	b.Proxy = proxy
 	b.Unlock()
+	b.http.SetProxy(proxy)
 }
 
 func (b *Bangumi) AbsUrl(uri string) string {
@@ -99,19 +105,9 @@ func (b *Bangumi) SearchGame(keyword string, page int) ([]*scraper.SearchItem, e
 		Limit:   defaultPageSize,
 		Offset:  (page - 1) * defaultPageSize,
 	}
-	var (
-		err  error = errors.New("")
-		cnt  int
-		data []byte
-	)
-	for ; err != nil && cnt < 4; cnt++ {
-		data, err = b.DoReq(http.MethodPost, b.SearchUri, nil, param)
-		if err != nil {
-			zaplog.L().With(zap.Int("retry", cnt)).Error("bangumi search error", zap.Error(err))
-			time.Sleep(time.Millisecond * 500)
-		}
-	}
+	data, err := b.DoReq(http.MethodPost, b.SearchUri, nil, param)
 	if err != nil {
+		zaplog.L().Error("bangumi search error", zap.Error(err))
 		return nil, err
 	}
 	var items []*scraper.SearchItem
@@ -157,18 +153,7 @@ func (b *Bangumi) GetGameItem(uri string) (*scraper.GameItem, error) {
 		item.Alias = []string{nameCN}
 	}
 
-	cover := gjson.GetBytes(data, "images.large").String()
-	if cover == "" {
-		cover = gjson.GetBytes(data, "images.medium").String()
-	}
-	if cover == "" {
-		cover = gjson.GetBytes(data, "images.common").String()
-	}
-	coverM := utils.SaveBunchTmpFile(func(url string) ([]byte, error) {
-		return b.DoReq(http.MethodGet, url, nil, nil)
-	}, []string{cover})
-
-	item.Cover = strings.TrimPrefix(coverM[cover], config.TmpDir)
+	cover := pickImageURL(gjson.ParseBytes(data))
 	item.Story = gjson.GetBytes(data, "summary").String()
 	for _, tag := range gjson.GetBytes(data, "tags").Array() {
 		item.Tags = append(item.Tags, &model.Tag{
@@ -200,17 +185,56 @@ func (b *Bangumi) GetGameItem(uri string) (*scraper.GameItem, error) {
 	if id != "" {
 		item.RelIDs = append(item.RelIDs, fmt.Sprintf("%s:%s", Name, id))
 	}
-	item.Characters, item.Staff, err = b.GetItemCharacters(id)
-	if err != nil {
-		b.logger.Error("get characters error", zap.String("scraper", b.name), zap.Error(err))
-	}
-	staff, err := b.GetItemStaff(id)
-	if err != nil {
-		b.logger.Error("get staff error", zap.String("scraper", b.name), zap.Error(err))
-	}
-	item.Staff = append(item.Staff, staff...)
 
+	// 封面下载、角色、职员三个阶段互不依赖，并行执行。
+	var (
+		coverPath  string
+		characters []handler.CharacterVo
+		charStaff  []handler.StaffVo
+		staff      []handler.StaffVo
+	)
+	group := errgroup.Group{}
+	group.Go(func() error {
+		res := utils.SaveBunchTmpFile(func(u string) ([]byte, error) {
+			return b.DoReq(http.MethodGet, u, nil, nil)
+		}, []string{cover})
+		coverPath = strings.TrimPrefix(res[cover], config.TmpDir)
+		return nil
+	})
+	group.Go(func() error {
+		var e error
+		characters, charStaff, e = b.GetItemCharacters(id)
+		if e != nil {
+			b.logger.Error("get characters error", zap.String("scraper", b.name), zap.Error(e))
+		}
+		return nil
+	})
+	group.Go(func() error {
+		var e error
+		staff, e = b.GetItemStaff(id)
+		if e != nil {
+			b.logger.Error("get staff error", zap.String("scraper", b.name), zap.Error(e))
+		}
+		return nil
+	})
+	group.Wait()
+
+	item.Cover = coverPath
+	item.Characters = characters
+	item.Staff = append(charStaff, staff...)
 	return item, nil
+}
+
+// pickImageURL 按 large -> medium -> common 的顺序取图片地址。
+func pickImageURL(v gjson.Result) string {
+	cover := v.Get("images.large").String()
+	if cover == "" {
+		cover = v.Get("images.medium").String()
+	}
+	if cover == "" {
+		cover = v.Get("images.common").String()
+	}
+	return cover
 }
 
 func (b *Bangumi) GetItemCharacters(SubjetID string) ([]handler.CharacterVo, []handler.StaffVo, error) {
@@ -219,97 +243,131 @@ func (b *Bangumi) GetItemCharacters(SubjetID string) ([]handler.CharacterVo, []h
 		return nil, nil, err
 	}
 
-	var lock sync.Mutex
-	wait := sync.WaitGroup{}
-	var characters []handler.CharacterVo
-	var staff []handler.StaffVo
-	for _, c := range gjson.ParseBytes(data).Array() {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-
-			id := c.Get("id").Int()
-			data, err := b.DoReq(http.MethodGet, fmt.Sprintf(BangumiCharactersInfoUri, strconv.Itoa(int(id))), nil, nil)
-			if err != nil {
-				b.logger.Error("request error", zap.String("url", fmt.Sprintf(BangumiCharactersInfoUri, strconv.Itoa(int(id)))), zap.Error(err))
-				return
-			}
-			cc := gjson.ParseBytes(data)
-
-			var alias []string
-			for _, a := range cc.Get("infobox").Array() {
-				if a.Get("key").String() == "别名" {
-					for _, ali := range a.Get("value").Array() {
-						alias = append(alias, ali.Get("v").String())
-					}
-				}
-			}
-			character := handler.CharacterVo{
-				RelIDs:  []string{fmt.Sprintf("%s:%d", Name, id)},
-				Name:    c.Get("name").String(),
-				Rlation: model.CharacterRelation(c.Get("relation").String()),
-				Cover: func() string {
-					cover := c.Get("images.large").String()
-					if cover == "" {
-						cover = c.Get("images.medium").String()
-					}
-					if cover == "" {
-						cover = c.Get("images.common").String()
-					}
-
-					res := utils.SaveBunchTmpFile(func(url string) ([]byte, error) {
-						return b.DoReq(http.MethodGet, url, nil, nil)
-					}, []string{cover})
-					return strings.TrimPrefix(res[cover], config.TmpDir)
-				}(),
-				Gender:  Gender(cc.Get("gender").String()),
-				Summary: cc.Get("summary").String(),
-				Alias:   alias,
-				PersonalInfo: model.PersonalInfo{
-					Birthday:  [2]int{int(cc.Get("birth_mon").Int()), int(cc.Get("birth_day").Int())},
-					BrithYear: int(cc.Get("birth_year").Int()),
-					BloodType: BloodType(int(cc.Get("blood_type").Int())),
-				},
-			}
-			arr := c.Get("actors").Array()
-			if len(arr) > 0 {
-				data, err := b.DoReq(http.MethodGet, fmt.Sprintf(BangumiPersonsInfoUri, arr[0].Get("id").String()), nil, nil)
-				if err != nil {
-					b.logger.Error("request error", zap.String("url", fmt.Sprintf(BangumiPersonsInfoUri, strconv.Itoa(int(id)))), zap.Error(err))
-					return
-				}
-				ss := gjson.ParseBytes(data)
-				character.CV = handler.StaffVo{
-					RelIDs: []string{fmt.Sprintf("%s:%s", Name, arr[0].Get("id").String())},
-					Name:   arr[0].Get("name").String(),
-					Cover: func() string {
-						cover := arr[0].Get("images.large").String()
-						if cover == "" {
-							cover = arr[0].Get("images.medium").String()
-						}
-						if cover == "" {
-							cover = arr[0].Get("images.common").String()
-						}
-						res := utils.SaveBunchTmpFile(func(url string) ([]byte, error) {
-							return b.DoReq(http.MethodGet, url, nil, nil)
-						}, []string{cover})
-						return strings.TrimPrefix(res[cover], config.TmpDir)
-					}(),
-					Summary:  arr[0].Get("short_summary").String(),
-					Gender:   Gender(ss.Get("gender").String()),
-					Relation: []model.PersonRelation{model.PRelationCV},
-				}
-				staff = append(staff, character.CV)
-			}
-
-			lock.Lock()
-			characters = append(characters, character)
-			lock.Unlock()
-		}()
-
+	type charEntry struct {
+		id                            int64
+		name, relation                string
+		coverURL, coverPath           string
+		actorID, actorName            string
+		actorCoverURL, actorCoverPath string
+		info, actorInfo               gjson.Result
+		infoDone, actorDone           bool
 	}
-	wait.Wait()
 
+	entries := []charEntry{}
+	coverURLs := []string{}
+	for _, c := range gjson.ParseBytes(data).Array() {
+		e := charEntry{
+			id:       c.Get("id").Int(),
+			name:     c.Get("name").String(),
+			relation: c.Get("relation").String(),
+			coverURL: pickImageURL(c),
+		}
+		if e.coverURL != "" {
+			coverURLs = append(coverURLs, e.coverURL)
+		}
+		if arr := c.Get("actors").Array(); len(arr) > 0 {
+			e.actorID = arr[0].Get("id").String()
+			e.actorName = arr[0].Get("name").String()
+			e.actorCoverURL = pickImageURL(arr[0])
+			if e.actorCoverURL != "" {
+				coverURLs = append(coverURLs, e.actorCoverURL)
+			}
+		}
+		entries = append(entries, e)
+	}
+
+	// 角色封面与 CV 封面一次性批量下载。
+	saved := utils.SaveBunchTmpFiles(func(u string) ([]byte, error) {
+		return b.DoReq(http.MethodGet, u, nil, nil)
+	}, coverURLs)
+	paths := make(map[string]string, len(saved))
+	for _, f := range saved {
+		paths[f.URL] = f.Path
+	}
+	for i := range entries {
+		entries[i].coverPath = paths[entries[i].coverURL]
+		entries[i].actorCoverPath = paths[entries[i].actorCoverURL]
+	}
+
+	// 角色详情与 CV 详情有界并发，结果按下标写回，保持列表顺序。
+	group := errgroup.Group{}
+	group.SetLimit(max(1, b.http.MaxConcurrency()))
+	for i := range entries {
+		group.Go(func() error {
+			e := &entries[i]
+			infoURL := fmt.Sprintf(BangumiCharactersInfoUri, strconv.Itoa(int(e.id)))
+			infoData, err := b.DoReq(http.MethodGet, infoURL, nil, nil)
+			if err != nil {
+				b.logger.Error("request error", zap.String("url", infoURL), zap.Error(err))
+				return nil
+			}
+			e.info = gjson.ParseBytes(infoData)
+			e.infoDone = true
+
+			if e.actorID == "" {
+				return nil
+			}
+			actorURL := fmt.Sprintf(BangumiPersonsInfoUri, e.actorID)
+			actorData, err := b.DoReq(http.MethodGet, actorURL, nil, nil)
+			if err != nil {
+				b.logger.Error("request error", zap.String("url", actorURL), zap.Error(err))
+				return nil
+			}
+			e.actorInfo = gjson.ParseBytes(actorData)
+			e.actorDone = true
+			return nil
+		})
+	}
+	group.Wait()
+
+	characters := make([]handler.CharacterVo, 0, len(entries))
+	staff := make([]handler.StaffVo, 0, len(entries))
+	for i := range entries {
+		e := &entries[i]
+		if !e.infoDone {
+			continue
+		}
+		cc := e.info
+
+		var alias []string
+		for _, a := range cc.Get("infobox").Array() {
+			if a.Get("key").String() == "别名" {
+				for _, ali := range a.Get("value").Array() {
+					alias = append(alias, ali.Get("v").String())
+				}
+			}
+		}
+		character := handler.CharacterVo{
+			RelIDs:  []string{fmt.Sprintf("%s:%d", Name, e.id)},
+			Name:    e.name,
+			Rlation: model.CharacterRelation(e.relation),
+			Cover:   strings.TrimPrefix(e.coverPath, config.TmpDir),
+			Gender:  Gender(cc.Get("gender").String()),
+			Summary: cc.Get("summary").String(),
+			Alias:   alias,
+			PersonalInfo: model.PersonalInfo{
+				Birthday:  [2]int{int(cc.Get("birth_mon").Int()), int(cc.Get("birth_day").Int())},
+				BrithYear: int(cc.Get("birth_year").Int()),
+				BloodType: BloodType(int(cc.Get("blood_type").Int())),
+			},
+		}
+		if e.actorID != "" {
+			// 保持旧行为：CV 详情失败时跳过整个角色。
+			if !e.actorDone {
+				continue
+			}
+			character.CV = handler.StaffVo{
+				RelIDs:   []string{fmt.Sprintf("%s:%s", Name, e.actorID)},
+				Name:     e.actorName,
+				Cover:    strings.TrimPrefix(e.actorCoverPath, config.TmpDir),
+				Summary:  e.actorInfo.Get("short_summary").String(),
+				Gender:   Gender(e.actorInfo.Get("gender").String()),
+				Relation: []model.PersonRelation{model.PRelationCV},
+			}
+			staff = append(staff, character.CV)
+		}
+		characters = append(characters, character)
+	}
 	return characters, staff, nil
 }
 
@@ -319,63 +377,91 @@ func (b *Bangumi) GetItemStaff(SubjectID string) ([]handler.StaffVo, error) {
 		return nil, err
 	}
 
-	var lock sync.Mutex
-	wait := sync.WaitGroup{}
-	var staff []handler.StaffVo
-	relationM := map[int64][]model.PersonRelation{}
-	coverM := map[int64]string{}
-	nameM := map[int64]string{}
+	type staffEntry struct {
+		id        int64
+		name      string
+		coverURL  string
+		coverPath string
+		relations []model.PersonRelation
+		info      gjson.Result
+		done      bool
+	}
+
+	order := []int64{}
+	byID := map[int64]*staffEntry{}
 	for _, s := range gjson.ParseBytes(data).Array() {
 		id := s.Get("id").Int()
-		relationM[id] = append(relationM[id], PersonRelation(s.Get("relation").String()))
-		cover := s.Get("images.large").String()
-		if cover == "" {
-			cover = s.Get("images.medium").String()
-		}
-		if cover == "" {
-			cover = s.Get("images.common").String()
-		}
-		res := utils.SaveBunchTmpFile(func(url string) ([]byte, error) {
-			return b.DoReq(http.MethodGet, url, nil, nil)
-		}, []string{cover})
-		coverM[id] = strings.TrimPrefix(res[cover], config.TmpDir)
-		nameM[id] = s.Get("name").String()
-	}
-	for id, relations := range relationM {
-		wait.Add(1)
-		go func(id int64, relations []model.PersonRelation) {
-			defer wait.Done()
-
-			data, err := b.DoReq(http.MethodGet, fmt.Sprintf(BangumiPersonsInfoUri, strconv.Itoa(int(id))), nil, nil)
-			if err != nil {
-				b.logger.Error("request error", zap.String("url", fmt.Sprintf(BangumiPersonsInfoUri, strconv.Itoa(int(id)))), zap.Error(err))
-				return
+		e, ok := byID[id]
+		if !ok {
+			e = &staffEntry{
+				id:       id,
+				name:     s.Get("name").String(),
+				coverURL: pickImageURL(s),
 			}
-			ss := gjson.ParseBytes(data)
+			byID[id] = e
+			order = append(order, id)
+		}
+		e.relations = append(e.relations, PersonRelation(s.Get("relation").String()))
+	}
 
-			var alias []string
-			for _, a := range ss.Get("infobox").Array() {
-				if a.Get("key").String() == "别名" {
-					for _, ali := range a.Get("value").Array() {
-						alias = append(alias, ali.Get("v").String())
-					}
+	coverURLs := make([]string, 0, len(order))
+	for _, id := range order {
+		if byID[id].coverURL != "" {
+			coverURLs = append(coverURLs, byID[id].coverURL)
+		}
+	}
+	saved := utils.SaveBunchTmpFiles(func(u string) ([]byte, error) {
+		return b.DoReq(http.MethodGet, u, nil, nil)
+	}, coverURLs)
+	paths := make(map[string]string, len(saved))
+	for _, f := range saved {
+		paths[f.URL] = f.Path
+	}
+	for _, id := range order {
+		byID[id].coverPath = paths[byID[id].coverURL]
+	}
+
+	group := errgroup.Group{}
+	group.SetLimit(max(1, b.http.MaxConcurrency()))
+	for _, id := range order {
+		group.Go(func() error {
+			e := byID[id]
+			infoURL := fmt.Sprintf(BangumiPersonsInfoUri, strconv.Itoa(int(id)))
+			infoData, err := b.DoReq(http.MethodGet, infoURL, nil, nil)
+			if err != nil {
+				b.logger.Error("request error", zap.String("url", infoURL), zap.Error(err))
+				return nil
+			}
+			e.info = gjson.ParseBytes(infoData)
+			e.done = true
+			return nil
+		})
+	}
+	group.Wait()
+
+	staff := make([]handler.StaffVo, 0, len(order))
+	for _, id := range order {
+		e := byID[id]
+		if !e.done {
+			continue
+		}
+		var alias []string
+		for _, a := range e.info.Get("infobox").Array() {
+			if a.Get("key").String() == "别名" {
+				for _, ali := range a.Get("value").Array() {
+					alias = append(alias, ali.Get("v").String())
 				}
 			}
-			lock.Lock()
-			staff = append(staff, handler.StaffVo{
-				RelIDs:   []string{fmt.Sprintf("%s:%d", Name, id)},
-				Name:     nameM[id],
-				Cover:    coverM[id],
-				Relation: relations,
-				Gender:   Gender(ss.Get("gender").String()),
-				Summary:  ss.Get("short_summary").String(),
-				Alias:    alias,
-			})
-			lock.Unlock()
-		}(id, relations)
-
+		}
+		staff = append(staff, handler.StaffVo{
+			RelIDs:   []string{fmt.Sprintf("%s:%d", Name, id)},
+			Name:     e.name,
+			Cover:    strings.TrimPrefix(e.coverPath, config.TmpDir),
+			Relation: e.relations,
+			Gender:   Gender(e.info.Get("gender").String()),
+			Summary:  e.info.Get("short_summary").String(),
+			Alias:    alias,
+		})
 	}
-	wait.Wait()
-
 	return staff, nil
 }

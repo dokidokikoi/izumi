@@ -1,9 +1,11 @@
 package vndb_test
 
 import (
-	"izumi/scraper/vndb"
+	"fmt"
 	"os"
 	"testing"
+
+	"izumi/scraper/vndb"
 )
 
 var vndbScraper *vndb.VNDB
@@ -16,9 +18,17 @@ func init() {
 }
 
 func Test_GetItem(t *testing.T) {
-	item, err := vndbScraper.GetGameItem("v2002")
+	item, err := vndbScraper.GetGameItem("v7636")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Log(item)
+}
+
+func Test_FetchCharacters(t *testing.T) {
+	cs, err := vndbScraper.FetchCharacters("v7636")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println(len(cs))
 }

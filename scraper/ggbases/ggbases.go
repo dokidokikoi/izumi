@@ -16,6 +16,7 @@ import (
 	"izumi/internal/handler"
 	"izumi/model"
 	"izumi/scraper"
+	"izumi/scraper/httpx"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/dokidokikoi/go-common/gopool"
@@ -47,6 +48,7 @@ type GGBases struct {
 	Headers   map[string]string
 	Proxy     string
 	logger    *zap.Logger
+	http      *httpx.Client
 
 	getitemChan chan struct{}
 }
@@ -63,6 +65,7 @@ func NewGGBases(header map[string]string, proxy string) scraper.IGameScraper {
 		Headers:     header,
 		Proxy:       proxy,
 		logger:      zaplog.L().Named(Name),
+		http:        httpx.New(Name, proxy),
 		getitemChan: make(chan struct{}, 1),
 	}
 }
@@ -81,6 +84,7 @@ func (gg *GGBases) SetProxy(proxy string) {
 	gg.Lock()
 	gg.Proxy = proxy
 	gg.Unlock()
+	gg.http.SetProxy(proxy)
 }
 
 func (gg *GGBases) SearchGame(keyword string, page int) ([]*scraper.SearchItem, error) {
@@ -135,7 +139,7 @@ func (gg *GGBases) DoReq(method, uri string, header map[string]string, body inte
 	gg.RUnlock()
 	maps.Copy(h, header)
 
-	rsp, err := tools.ReqWithProxy(method, uri, body, gg.Proxy, tools.SetHeadersWithOption(h))
+	rsp, err := gg.http.Do(method, uri, h, body)
 	if err != nil {
 		return nil, err
 	}

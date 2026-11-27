@@ -39,7 +39,7 @@ func TestTwoDFan_GetItem(t *testing.T) {
 }
 
 func TestTwoDFan_SearchGame(t *testing.T) {
-	items, err := twoDFanScraper.SearchGame("彼女", 1)
+	items, err := twoDFanScraper.SearchGame("123", 1)
 	if err != nil {
 		panic(err)
 	}

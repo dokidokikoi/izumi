@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"izumi/internal/handler"
 	"izumi/model"
 	"izumi/scraper"
+	"izumi/scraper/httpx"
 	"izumi/utils"
 
 	"github.com/PuerkitoBio/goquery"
@@ -45,9 +47,13 @@ type TwoDFan struct {
 	Headers   map[string]string
 	Proxy     string
 	logger    *zap.Logger
+	http      *httpx.Client
 }
 
 func NewTwoDFan(header map[string]string, proxy string) scraper.IGameScraper {
+	if header == nil {
+		header = map[string]string{}
+	}
 	return &TwoDFan{
 		name:      Name,
 		Domain:    twoDFanDomain,
@@ -55,6 +61,7 @@ func NewTwoDFan(header map[string]string, proxy string) scraper.IGameScraper {
 		Headers:   header,
 		Proxy:     proxy,
 		logger:    zaplog.L().Named(Name),
+		http:      httpx.New(Name, proxy),
 	}
 }
 
@@ -72,6 +79,7 @@ func (tdf *TwoDFan) SetProxy(proxy string) {
 	tdf.Lock()
 	tdf.Proxy = proxy
 	tdf.Unlock()
+	tdf.http.SetProxy(proxy)
 }
 
 func (tdf *TwoDFan) SearchGame(keyword string, page int) ([]*scraper.SearchItem, error) {
@@ -92,6 +100,11 @@ func (tdf *TwoDFan) SearchGame(keyword string, page int) ([]*scraper.SearchItem,
 	if err != nil {
 		return nil, err
 	}
+
+	fmt.Println(uri.String())
+	f, _ := os.Create("index.html")
+	f.Write(data)
+	f.Close()
 
 	root, err := goquery.NewDocumentFromReader(bytes.NewBuffer(data))
 	if err != nil {
@@ -129,7 +142,7 @@ func (tdf *TwoDFan) DoReq(method, uri string, header map[string]string, body any
 	tdf.RUnlock()
 	maps.Copy(h, header)
 
-	rsp, err := tools.ReqWithProxy(method, uri, body, tdf.Proxy, tools.SetHeadersWithOption(h))
+	rsp, err := tdf.http.Do(method, uri, h, body)
 	if err != nil {
 		return nil, err
 	}
@@ -159,55 +172,69 @@ func (tdf *TwoDFan) GetGameItem(uri string) (*scraper.GameItem, error) {
 			item.RelIDs = append(item.RelIDs, fmt.Sprintf("%s:%s", Name, id))
 		}
 	}
-	// 获取名称
-	item.Name, item.Alias, err = tdf.GetItemName(root)
-	if err != nil {
-		tdf.logger.Error("获取名称失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
-	}
-	// 获取
-	item.Category, err = tdf.GetItemCategory(root)
-	if err != nil {
-		tdf.logger.Error("获取分类失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
-	}
-	item.Cover, item.Images, err = tdf.GetItemCover(root)
-	if err != nil {
-		tdf.logger.Error("获取封面失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
-	}
-	item.IssueDate, err = tdf.GetItemIssueDate(root)
-	if err != nil {
-		tdf.logger.Error("获取发布日期失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
-	}
-	item.Characters, err = tdf.GetItemCharacters(root)
-	if err != nil {
-		tdf.logger.Error("获取角色失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
-	}
-	item.Brands, err = tdf.GetItemBrands(root)
-	if err != nil {
-		tdf.logger.Error("获取开发厂商失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
-	}
-	item.Tags, err = tdf.GetItemTags(root)
-	if err != nil {
-		tdf.logger.Error("获取tag失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
-	}
-	item.OtherInfo, err = tdf.GetItemOtherInfo(root)
-	if err != nil {
-		tdf.logger.Error("获取其它信息失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
-	}
-	links, err := tdf.GetItemLinks(root)
-	if err != nil {
-		tdf.logger.Error("获取链接失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
-	}
-	item.Links = append(item.Links, links...)
+
+	group := errgroup.Group{}
+	group.Go(func() error {
+		// 获取名称
+		item.Name, item.Alias, err = tdf.GetItemName(root)
+		if err != nil {
+			tdf.logger.Error("获取名称失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
+		}
+		// 获取
+		item.Category, err = tdf.GetItemCategory(root)
+		if err != nil {
+			tdf.logger.Error("获取分类失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
+		}
+		item.Cover, item.Images, err = tdf.GetItemCover(root)
+		if err != nil {
+			tdf.logger.Error("获取封面失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
+		}
+		return nil
+	})
+	group.Go(func() error {
+		item.IssueDate, err = tdf.GetItemIssueDate(root)
+		if err != nil {
+			tdf.logger.Error("获取发布日期失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
+		}
+		item.Characters, err = tdf.GetItemCharacters(root)
+		if err != nil {
+			tdf.logger.Error("获取角色失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
+		}
+		return nil
+	})
+
 	var images []string
-	item.Story, images, err = tdf.GetItemStory(root)
-	if err != nil {
-		tdf.logger.Error("获取故事失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
-	}
+	group.Go(func() error {
+		item.Brands, err = tdf.GetItemBrands(root)
+		if err != nil {
+			tdf.logger.Error("获取开发厂商失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
+		}
+		item.Tags, err = tdf.GetItemTags(root)
+		if err != nil {
+			tdf.logger.Error("获取tag失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
+		}
+		item.OtherInfo, err = tdf.GetItemOtherInfo(root)
+		if err != nil {
+			tdf.logger.Error("获取其它信息失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
+		}
+		links, err := tdf.GetItemLinks(root)
+		if err != nil {
+			tdf.logger.Error("获取链接失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
+		}
+		item.Links = append(item.Links, links...)
+		item.Story, images, err = tdf.GetItemStory(root)
+		if err != nil {
+			tdf.logger.Error("获取故事失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
+		}
+		item.Staff, err = tdf.GetItemStaff(root)
+		if err != nil {
+			tdf.logger.Error("获取staff失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
+		}
+		return nil
+	})
+
+	group.Wait()
 	item.Images = append(item.Images, images...)
-	item.Staff, err = tdf.GetItemStaff(root)
-	if err != nil {
-		tdf.logger.Error("获取staff失败", zap.String("scraper", tdf.name), zap.String("uri", uri), zap.Error(err))
-	}
 
 	return item, nil
 }

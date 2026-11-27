@@ -65,7 +65,7 @@ type Game struct {
 	Cover      string                    `gorm:"type:varchar(512)" json:"cover"`
 	Images     pq.StringArray            `gorm:"type:text[]" json:"images"`
 	CategoryID uint                      `gorm:"default:null" json:"-"`
-	Price      string                    `gorm:"type:varchar(32)" json:"price"`
+	Price      string                    `gorm:"type:varchar(128)" json:"price"`
 	IssueDate  time.Time                 `json:"issue_date"`
 	Story      string                    `json:"story"`
 	Links      datatypes.JSONSlice[Link] `gorm:"type:jsonb" json:"links"`

@@ -12,9 +12,11 @@ import (
 	"izumi/internal/handler"
 	"izumi/model"
 	"izumi/scraper"
+	"izumi/scraper/httpx"
 	"izumi/utils"
 
 	"github.com/pkg/errors"
+	"golang.org/x/sync/errgroup"
 
 	"izumi/config"
 
@@ -48,9 +50,13 @@ type GetChu struct {
 	Headers   map[string]string
 	Proxy     string
 	logger    *zap.Logger
+	http      *httpx.Client
 }
 
 func NewGetChu(headers map[string]string, proxy string) scraper.IGameScraper {
+	if headers == nil {
+		headers = map[string]string{}
+	}
 	return &GetChu{
 		name:      "getchu",
 		Domain:    GetChuDomain,
@@ -58,6 +64,7 @@ func NewGetChu(headers map[string]string, proxy string) scraper.IGameScraper {
 		Headers:   headers,
 		Proxy:     proxy,
 		logger:    zaplog.L().Named(Name),
+		http:      httpx.New(Name, proxy),
 	}
 }
 
@@ -75,6 +82,7 @@ func (gc *GetChu) SetProxy(proxy string) {
 	gc.RLock()
 	gc.Proxy = proxy
 	gc.RUnlock()
+	gc.http.SetProxy(proxy)
 }
 
 func (gc *GetChu) SearchGame(keyword string, page int) ([]*scraper.SearchItem, error) {
@@ -140,7 +148,7 @@ func (gc *GetChu) DoReq(method, uri string, header map[string]string, body inter
 		uri += "?" + query
 	}
 
-	rsp, err := tools.ReqWithProxy(method, uri, body, gc.Proxy, tools.SetHeadersWithOption(h))
+	rsp, err := gc.http.Do(method, uri, h, body)
 	if err != nil {
 		return nil, err
 	}
@@ -180,14 +188,18 @@ func (gc *GetChu) GetGameItem(uri string) (*scraper.GameItem, error) {
 	}
 	item.RelIDs = append(item.RelIDs, fmt.Sprintf("%s:%s", Name, id))
 
-	item.Cover, item.Images, err = gc.GetItemCover(root, id)
-	if err != nil {
-		gc.logger.Error("获取封面失败", zap.String("scraper", gc.name), zap.String("uri", uri), zap.Error(err))
-	}
-	item.Name, err = gc.GetItemName(root)
-	if err != nil {
-		gc.logger.Error("获取名称失败", zap.String("scraper", gc.name), zap.String("uri", uri), zap.Error(err))
-	}
+	group := errgroup.Group{}
+	group.Go(func() error {
+		item.Cover, item.Images, err = gc.GetItemCover(root, id)
+		if err != nil {
+			gc.logger.Error("获取封面失败", zap.String("scraper", gc.name), zap.String("uri", uri), zap.Error(err))
+		}
+		item.Name, err = gc.GetItemName(root)
+		if err != nil {
+			gc.logger.Error("获取名称失败", zap.String("scraper", gc.name), zap.String("uri", uri), zap.Error(err))
+		}
+		return nil
+	})
 
 	root.Find("#soft_table tr:nth-child(2) table tr").Each(func(i int, s *goquery.Selection) {
 		title, err := tools.Jp2Utf8([]byte(s.Find("td").First().Text()))
@@ -255,16 +267,21 @@ func (gc *GetChu) GetGameItem(uri string) (*scraper.GameItem, error) {
 		}
 	})
 
-	var staff []handler.StaffVo
-	item.Characters, staff, err = gc.GetItemCharacter(root)
-	if err != nil {
-		gc.logger.Error("获取角色失败", zap.String("scraper", gc.name), zap.String("uri", uri), zap.Error(err))
-	}
-	item.Staff = append(item.Staff, staff...)
-	item.Story, err = gc.GetItemStory(root)
-	if err != nil {
-		gc.logger.Error("获取故事失败", zap.String("scraper", gc.name), zap.String("uri", uri), zap.Error(err))
-	}
+	group.Go(func() error {
+		var staff []handler.StaffVo
+		item.Characters, staff, err = gc.GetItemCharacter(root)
+		if err != nil {
+			gc.logger.Error("获取角色失败", zap.String("scraper", gc.name), zap.String("uri", uri), zap.Error(err))
+		}
+		item.Staff = append(item.Staff, staff...)
+		item.Story, err = gc.GetItemStory(root)
+		if err != nil {
+			gc.logger.Error("获取故事失败", zap.String("scraper", gc.name), zap.String("uri", uri), zap.Error(err))
+		}
+		return nil
+	})
+
+	group.Wait()
 
 	return item, nil
 }

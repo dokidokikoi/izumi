@@ -6,18 +6,19 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"izumi/config"
 	"izumi/internal/handler"
 	"izumi/model"
 	"izumi/scraper"
+	"izumi/scraper/httpx"
 	"izumi/utils"
 
 	zaplog "github.com/dokidokikoi/go-common/log/zap"
 	"github.com/dokidokikoi/go-common/tools"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 const Name = "vndb"
@@ -43,12 +44,23 @@ var (
 		"va.character.gender", "va.character.traits.name", "va.character.traits.description", "va.character.vns.spoiler",
 		"va.note", "extlinks.url", "extlinks.label",
 	}
+
+	CharacterFields = []string{
+		"id", "name", "original", "description",
+		"image.url", "blood_type", "aliases", "vns.role",
+		"height", "weight", "bust", "waist",
+		"hips", "cup", "age", "birthday",
+		"gender", "traits.name", "traits.description", "vns.spoiler",
+	}
 )
 
 const (
 	DefaultHeader_UserAgent = "dokidokikoi/izumi (https://github.com/dokidokikoi/izumi)"
+)
 
-	VNDBSearchUri = "https://api.vndb.org/kana/vn"
+var (
+	VNDBSearchUri    = "https://api.vndb.org/kana/vn"
+	VNDBCharacterUri = "https://api.vndb.org/kana/character"
 )
 
 type VNDB struct {
@@ -57,14 +69,19 @@ type VNDB struct {
 	Headers map[string]string
 	Proxy   string
 	logger  *zap.Logger
+	http    *httpx.Client
 }
 
 func NewVNDB(header map[string]string, proxy string) scraper.IGameScraper {
+	if header == nil {
+		header = map[string]string{}
+	}
 	return &VNDB{
 		name:    Name,
 		Headers: header,
 		Proxy:   proxy,
 		logger:  zaplog.L().Named(Name),
+		http:    httpx.New(Name, proxy),
 	}
 }
 
@@ -78,29 +95,20 @@ func (v *VNDB) SetProxy(proxy string) {
 	v.Lock()
 	v.Proxy = proxy
 	v.Unlock()
+	v.http.SetProxy(proxy)
 }
 
 func (v *VNDB) SearchGame(keyword string, page int) ([]*scraper.SearchItem, error) {
-	var (
-		err  error = errors.New("")
-		cnt  int
-		data []byte
-	)
-	for ; err != nil && cnt < 4; cnt++ {
-		data, err = v.DoReq(http.MethodPost, VNDBSearchUri, nil, map[string]any{
-			"filters": []any{
-				"search", "=", keyword,
-			},
-			"fields":  strings.Join(SearchFields, ","),
-			"results": 20,
-			"page":    page,
-		})
-		if err != nil {
-			zaplog.L().With(zap.Int("retry", cnt)).Error("vndb search error", zap.Error(err))
-			time.Sleep(time.Millisecond * 500)
-		}
-	}
+	data, err := v.DoReq(http.MethodPost, VNDBSearchUri, nil, map[string]any{
+		"filters": []any{
+			"search", "=", keyword,
+		},
+		"fields":  strings.Join(SearchFields, ","),
+		"results": 20,
+		"page":    page,
+	})
 	if err != nil {
+		zaplog.L().Error("vndb search error", zap.Error(err))
 		return nil, err
 	}
 	var resp BaseResponse[VN]
@@ -128,51 +136,47 @@ func (v *VNDB) SearchGame(keyword string, page int) ([]*scraper.SearchItem, erro
 }
 
 func (v *VNDB) GetGameItem(uri string) (*scraper.GameItem, error) {
-	var (
-		err  error = errors.New("")
-		cnt  int
-		data []byte
-	)
-	for ; err != nil && cnt < 4; cnt++ {
-		data, err = v.DoReq(http.MethodPost, VNDBSearchUri, nil, map[string]any{
-			"filters": []any{
-				"id", "=", uri,
-			},
-			"fields": strings.Join(DetailFields, ","),
-		})
+	group := errgroup.Group{}
+	var extraCs []handler.CharacterVo
+	group.Go(func() error {
+		var err error
+		extraCs, err = v.FetchCharacters(uri)
 		if err != nil {
-			zaplog.L().With(zap.Int("retry", cnt)).Error("vndb search error", zap.Error(err))
-			time.Sleep(time.Millisecond * 500)
+			zaplog.L().With(zap.Error(err)).Error("FetchCharacters")
 		}
-	}
+		return nil
+	})
+	data, err := v.DoReq(http.MethodPost, VNDBSearchUri, nil, map[string]any{
+		"filters": []any{
+			"id", "=", uri,
+		},
+		"fields": strings.Join(DetailFields, ","),
+	})
 	if err != nil {
+		zaplog.L().Error("vndb get item error", zap.Error(err))
 		return nil, err
 	}
 	var resp BaseResponse[VN]
-	err = json.Unmarshal(data, &resp)
-	if err != nil {
+	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, err
 	}
 	if len(resp.Result) == 0 {
 		return nil, nil
 	}
-	downloadImg := func(image string) string {
-		imageMap := utils.SaveBunchTmpFile(func(uri string) ([]byte, error) {
-			return v.DoReq(http.MethodGet, uri, nil, nil)
-		}, []string{image})
-		return strings.TrimPrefix(imageMap[image], config.TmpDir)
-	}
-	downloadImgs := func(images []string) []string {
-		imageMap := utils.SaveBunchTmpFile(func(uri string) ([]byte, error) {
-			return v.DoReq(http.MethodGet, uri, nil, nil)
-		}, images)
-		images = images[:0]
-		for _, v := range imageMap {
-			images = append(images, strings.TrimPrefix(v, config.TmpDir))
-		}
-		return images
-	}
 	res := resp.Result[0]
+	characters := buildCharacters(res)
+	charSet := tools.NewSet[string]()
+	for _, c := range characters {
+		charSet.Add(c.Name)
+	}
+
+	group.Wait()
+	for _, c := range extraCs {
+		if !charSet.Has(c.Name) {
+			charSet.Add(c.Name)
+			characters = append(characters, c)
+		}
+	}
 	item := &scraper.GameItem{
 		GameVo: handler.GameVo{
 			RelIDs: []string{Name + ":" + res.ID},
@@ -195,13 +199,12 @@ func (v *VNDB) GetGameItem(uri string) (*scraper.GameItem, error) {
 				}
 				return alias
 			}(),
-			Cover: downloadImg(res.Image.Url),
+			Cover: res.Image.Url,
 			Images: func() []string {
-				var images []string
+				images := make([]string, 0, len(res.Screenshots))
 				for _, s := range res.Screenshots {
 					images = append(images, s.Url)
 				}
-				images = downloadImgs(images)
 				return images
 			}(),
 			Brands: func() []*model.Brand {
@@ -229,119 +232,8 @@ func (v *VNDB) GetGameItem(uri string) (*scraper.GameItem, error) {
 				// }
 				return tags
 			}(),
-			Staff: func() []handler.StaffVo {
-				staffs := []handler.StaffVo{}
-				staffM := map[string]int{}
-				for _, staff := range res.Staff {
-					idx, ok := staffM[staff.ID]
-					if !ok {
-						staffs = append(staffs, Staff2Staff(staff))
-						staffM[staff.ID] = len(staffs) - 1
-					} else if r := TransfPRelation(staff.Role); r != model.PRelationUnknown {
-						staffs[idx].Relation = append(staffs[idx].Relation, r)
-					}
-				}
-				for _, va := range res.VA {
-					idx, ok := staffM[va.Staff.ID]
-					if !ok {
-						staff := Staff2Staff(va.Staff)
-						staff.Relation = append(staff.Relation, model.PRelationCV)
-						staffs = append(staffs, staff)
-						staffM[va.Staff.ID] = len(staffs) - 1
-					} else {
-						staffs[idx].Relation = append(staffs[idx].Relation, model.PRelationCV)
-					}
-				}
-				return staffs
-			}(),
-			Characters: func() []handler.CharacterVo {
-				characters1 := []handler.CharacterVo{}
-				characters2 := []handler.CharacterVo{}
-				spoilerM := map[string]struct{}{}
-				characterM := map[string]struct{}{}
-				for _, va := range res.VA {
-					char := va.Character
-					if _, ok := characterM[char.ID]; ok {
-						continue
-					}
-					characterM[char.ID] = struct{}{}
-					spoiler := false
-					role := ""
-					for _, v := range char.VNS {
-						if v.ID == res.ID {
-							spoiler = v.Spoiler > 0
-							role = v.Role
-						}
-					}
-					c := handler.CharacterVo{
-						RelIDs: []string{Name + ":" + char.ID},
-						Name: func() string {
-							if char.Original != "" {
-								return char.Original
-							}
-							return char.Name
-						}(),
-						Alias: func() []string {
-							if char.Original != "" {
-								return append(char.Aliases, char.Name)
-							}
-							return char.Aliases
-						}(),
-						Gender: func() model.Gender {
-							if len(char.Gender) > 1 {
-								return TransfGender(char.Gender[1])
-							} else if len(char.Gender) > 0 {
-								return TransfGender(char.Gender[0])
-							}
-							return model.UnKnown
-						}(),
-						Summary: char.Description,
-						Cover:   downloadImg(char.Image.Url),
-						CV:      Staff2Staff(va.Staff),
-						PersonalInfo: model.PersonalInfo{
-							Age: char.Age,
-							Birthday: func() [2]int {
-								if len(char.Birthday) > 1 {
-									return [2]int{char.Birthday[0], char.Birthday[1]}
-								} else if len(char.Birthday) > 0 {
-									return [2]int{char.Birthday[0], 0}
-								}
-								return [2]int{0, 0}
-							}(),
-							BloodType: char.BloodType,
-							Bust:      char.Bust,
-							Cup:       char.Cup,
-							Height:    char.Height,
-							Weight:    char.Weight,
-							Waist:     char.Waist,
-							Hips:      char.Hips,
-							Traits: func() []model.Trait {
-								traits := []model.Trait{}
-								for _, trait := range char.Traits {
-									traits = append(traits, model.Trait{
-										Name:        trait.Name,
-										Description: trait.Description,
-									})
-								}
-								return traits
-							}(),
-						},
-						Rlation: TransfCRelation(role),
-					}
-					if spoiler {
-						characters2 = append(characters2, c)
-					} else {
-						characters1 = append(characters1, c)
-						spoilerM[c.Name] = struct{}{}
-					}
-				}
-				for _, c := range characters2 {
-					if _, ok := spoilerM[c.Name]; !ok {
-						characters1 = append(characters1, c)
-					}
-				}
-				return characters1
-			}(),
+			Staff:      buildStaff(res),
+			Characters: characters,
 			Links: func() []model.Link {
 				links := []model.Link{{Name: Name, Url: "https://vndb.org/" + uri, Type: model.LinkTypeSource}}
 				for _, item := range res.ExtLinks {
@@ -352,7 +244,169 @@ func (v *VNDB) GetGameItem(uri string) (*scraper.GameItem, error) {
 		},
 		ScraperName: v.GetName(),
 	}
+
+	// 一次性批量下载所有图片：封面 + 截图 + 角色封面，避免逐角色串行。
+	urls := make([]string, 0, 2+len(res.Screenshots)+len(item.Characters))
+	urls = append(urls, res.Image.Url)
+	for _, s := range res.Screenshots {
+		urls = append(urls, s.Url)
+	}
+	for _, c := range item.Characters {
+		urls = append(urls, c.Cover)
+	}
+	saved := utils.SaveBunchTmpFiles(func(u string) ([]byte, error) {
+		return v.DoReq(http.MethodGet, u, nil, nil)
+	}, urls)
+	paths := make(map[string]string, len(saved))
+	for _, f := range saved {
+		paths[f.URL] = f.Path
+	}
+	item.Cover = strings.TrimPrefix(paths[res.Image.Url], config.TmpDir)
+	images := make([]string, 0, len(res.Screenshots))
+	for _, s := range res.Screenshots {
+		if p, ok := paths[s.Url]; ok {
+			images = append(images, strings.TrimPrefix(p, config.TmpDir))
+		}
+	}
+	item.Images = images
+	for i := range item.Characters {
+		item.Characters[i].Cover = strings.TrimPrefix(paths[item.Characters[i].Cover], config.TmpDir)
+	}
 	return item, nil
+}
+
+func buildStaff(res VN) []handler.StaffVo {
+	staffs := []handler.StaffVo{}
+	staffM := map[string]int{}
+	for _, staff := range res.Staff {
+		idx, ok := staffM[staff.ID]
+		if !ok {
+			staffs = append(staffs, Staff2Staff(staff))
+			staffM[staff.ID] = len(staffs) - 1
+		} else if r := TransfPRelation(staff.Role); r != model.PRelationUnknown {
+			staffs[idx].Relation = append(staffs[idx].Relation, r)
+		}
+	}
+	for _, va := range res.VA {
+		idx, ok := staffM[va.Staff.ID]
+		if !ok {
+			staff := Staff2Staff(va.Staff)
+			staff.Relation = append(staff.Relation, model.PRelationCV)
+			staffs = append(staffs, staff)
+			staffM[va.Staff.ID] = len(staffs) - 1
+		} else {
+			staffs[idx].Relation = append(staffs[idx].Relation, model.PRelationCV)
+		}
+	}
+	return staffs
+}
+
+func buildCharacters(res VN) []handler.CharacterVo {
+	roleM := map[string][]handler.CharacterVo{}
+	characterM := map[string]struct{}{}
+	for _, va := range res.VA {
+		char := va.Character
+		if _, ok := characterM[char.ID]; ok {
+			continue
+		}
+		characterM[char.ID] = struct{}{}
+		role := ""
+		for _, v := range char.VNS {
+			if v.ID == res.ID {
+				role = v.Role
+				break
+			}
+		}
+
+		c := buildCharacter(char, res.ID)
+		c.CV = Staff2Staff(va.Staff)
+		roleM[role] = append(roleM[role], c)
+	}
+
+	characters := roleM["primary"]
+	characters = append(characters, roleM["main"]...)
+	delete(roleM, "primary")
+	delete(roleM, "main")
+
+	charM := map[string]int{}
+	for i, c := range characters {
+		charM[c.Name] = i
+	}
+
+	for _, cs := range roleM {
+		for _, c := range cs {
+			if idx, ok := charM[c.Name]; ok {
+				characters[idx].Images = tools.NewSet(append(characters[idx].Images, c.Images...)...).Slice()
+			} else {
+				charM[c.Name] = len(characters)
+				characters = append(characters, c)
+			}
+		}
+	}
+	return characters
+}
+
+func buildCharacter(char Character, vnID string) handler.CharacterVo {
+	role := ""
+	for _, vn := range char.VNS {
+		if vn.ID == vnID {
+			role = char.VNS[0].Role
+		}
+	}
+	return handler.CharacterVo{
+		RelIDs: []string{Name + ":" + char.ID},
+		Name: func() string {
+			if char.Original != "" {
+				return char.Original
+			}
+			return char.Name
+		}(),
+		Alias: func() []string {
+			if char.Original != "" {
+				return append(char.Aliases, char.Name)
+			}
+			return char.Aliases
+		}(),
+		Gender: func() model.Gender {
+			if len(char.Gender) > 1 {
+				return TransfGender(char.Gender[1])
+			} else if len(char.Gender) > 0 {
+				return TransfGender(char.Gender[0])
+			}
+			return model.UnKnown
+		}(),
+		Summary: char.Description,
+		Cover:   char.Image.Url,
+		PersonalInfo: model.PersonalInfo{
+			Age: char.Age,
+			Birthday: func() [2]int {
+				if len(char.Birthday) > 1 {
+					return [2]int{char.Birthday[0], char.Birthday[1]}
+				} else if len(char.Birthday) > 0 {
+					return [2]int{char.Birthday[0], 0}
+				}
+				return [2]int{0, 0}
+			}(),
+			BloodType: char.BloodType,
+			Bust:      char.Bust,
+			Cup:       char.Cup,
+			Height:    char.Height,
+			Weight:    char.Weight,
+			Waist:     char.Waist,
+			Hips:      char.Hips,
+			Traits: func() []model.Trait {
+				traits := []model.Trait{}
+				for _, trait := range char.Traits {
+					traits = append(traits, model.Trait{
+						Name:        trait.Name,
+						Description: trait.Description,
+					})
+				}
+				return traits
+			}(),
+		},
+		Rlation: TransfCRelation(role),
+	}
 }
 
 func (v *VNDB) DoReq(method, uri string, header map[string]string, body any) ([]byte, error) {
@@ -362,7 +416,7 @@ func (v *VNDB) DoReq(method, uri string, header map[string]string, body any) ([]
 	v.RUnlock()
 	maps.Copy(h, header)
 
-	rsp, err := tools.ReqWithProxy(method, uri, body, v.Proxy, tools.SetHeadersWithOption(h))
+	rsp, err := v.http.Do(method, uri, h, body)
 	if err != nil {
 		return nil, err
 	}
@@ -370,6 +424,29 @@ func (v *VNDB) DoReq(method, uri string, header map[string]string, body any) ([]
 		return nil, errors.Errorf("status code: %d, body: %s", rsp.StatusCode(), rsp.String())
 	}
 	return rsp.Bytes(), nil
+}
+
+func (v *VNDB) FetchCharacters(vnID string) ([]handler.CharacterVo, error) {
+	data, err := v.DoReq(http.MethodPost, VNDBCharacterUri, nil, map[string]any{
+		"filters": []any{
+			"vn", "=", []string{"id", "=", vnID},
+		},
+		"fields":  strings.Join(CharacterFields, ","),
+		"results": 100,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var resp BaseResponse[Character]
+	err = json.Unmarshal(data, &resp)
+	if err != nil {
+		return nil, err
+	}
+	var cs []handler.CharacterVo
+	for _, c := range resp.Result {
+		cs = append(cs, buildCharacter(c, vnID))
+	}
+	return cs, nil
 }
 
 func (v *VNDB) GetName() string {

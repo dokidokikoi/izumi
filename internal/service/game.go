@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -806,6 +805,7 @@ func (gsrv *game) SaveFiles(ctx context.Context, g *handler.GameVo, process ...f
 func (gsrv *game) Load(ctx context.Context, gVo *handler.GameVo, path string) (e error) {
 	var err error
 
+	loadGameAllImages(zaplog.From(ctx), path)
 	if len(gVo.RelIDs) >= 0 {
 		gVo.ID, err = gsrv.SearchExistGame(ctx, gVo.RelIDs)
 		if err != nil {
@@ -941,31 +941,19 @@ func loadGameAllImages(logger *zap.Logger, path string) error {
 		if file.IsDir() {
 			continue
 		}
+		srcPath := filepath.Join(path, file.Name())
 		_, fileName := filepath.Split(file.Name())
 		dstPath := filepath.Join(config.DataDir, fileName)
 		_, err := os.Stat(dstPath)
 		if err != nil {
-			if os.IsExist(err) {
+			if !os.IsNotExist(err) {
+				logger.With(zap.Error(err)).Error("", zap.String("path", dstPath))
 				continue
 			}
-			logger.With(zap.Error(err)).Error("", zap.String("path", dstPath))
-			continue
 		}
-
-		dstF, err := os.Create(dstPath)
+		err = tools.Cp(srcPath, dstPath)
 		if err != nil {
-			logger.With(zap.Error(err)).Error("", zap.String("path", dstPath))
-			continue
-		}
-		srcF, err := os.Open(file.Name())
-		if err != nil {
-			logger.With(zap.Error(err)).Error("", zap.String("path", file.Name()))
-			continue
-		}
-		_, err = io.Copy(dstF, srcF)
-		if err != nil {
-			logger.With(zap.Error(err)).Error("", zap.String("path", file.Name()))
-			continue
+			logger.With(zap.Error(err)).Error("", zap.String("src path", srcPath), zap.String("dst path", dstPath))
 		}
 	}
 	return nil

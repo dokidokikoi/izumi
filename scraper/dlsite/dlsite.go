@@ -18,6 +18,7 @@ import (
 	"izumi/internal/handler"
 	"izumi/model"
 	"izumi/scraper"
+	"izumi/scraper/httpx"
 	"izumi/utils"
 
 	"github.com/PuerkitoBio/goquery"
@@ -26,6 +27,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 const Name = "dlsite"
@@ -53,9 +55,13 @@ type DlSite struct {
 	Headers   map[string]string
 	Proxy     string
 	logger    *zap.Logger
+	http      *httpx.Client
 }
 
 func NewDlSite(header map[string]string, proxy string) scraper.IGameScraper {
+	if header == nil {
+		header = map[string]string{}
+	}
 	return &DlSite{
 		name:      Name,
 		Domain:    DlSiteDomain,
@@ -63,6 +69,7 @@ func NewDlSite(header map[string]string, proxy string) scraper.IGameScraper {
 		Headers:   header,
 		Proxy:     proxy,
 		logger:    zaplog.L().Named(Name),
+		http:      httpx.New(Name, proxy),
 	}
 }
 
@@ -80,6 +87,7 @@ func (ds *DlSite) SetProxy(proxy string) {
 	ds.Lock()
 	ds.Proxy = proxy
 	ds.Unlock()
+	ds.http.SetProxy(proxy)
 }
 
 func (ds *DlSite) SearchGame(keyword string, page int) ([]*scraper.SearchItem, error) {
@@ -148,7 +156,7 @@ func (ds *DlSite) DoReq(method, uri string, header map[string]string, body inter
 		uri += "?" + query
 	}
 
-	rsp, err := tools.ReqWithProxy(method, uri, body, ds.Proxy, tools.SetHeadersWithOption(h))
+	rsp, err := ds.http.Do(method, uri, h, body)
 	if err != nil {
 		return nil, err
 	}
@@ -190,29 +198,42 @@ func (ds *DlSite) GetGameItem(uri string) (*scraper.GameItem, error) {
 		item.RelIDs = append(item.RelIDs, fmt.Sprintf("%s:%s", Name, id))
 	}
 
+	group := errgroup.Group{}
 	item.Name = root.Find("#work_name").Text()
-	item.Cover, item.Images, err = ds.GetItemCover(root)
-	if err != nil {
-		ds.logger.Error("获取封面失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))
-	}
-	item.Brands, err = ds.GetItemBrands(root)
-	if err != nil {
-		ds.logger.Error("获取开发商失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))
-	}
-	item.Characters, item.Staff, err = ds.GetItemCharacter(root)
-	if err != nil {
-		ds.logger.Error("获取角色失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))
-	}
+	group.Go(func() error {
+		item.Cover, item.Images, err = ds.GetItemCover(root)
+		if err != nil {
+			ds.logger.Error("获取封面失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))
+		}
+		return nil
+	})
+	group.Go(func() error {
+		item.Brands, err = ds.GetItemBrands(root)
+		if err != nil {
+			ds.logger.Error("获取开发商失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))
+		}
+		item.Characters, item.Staff, err = ds.GetItemCharacter(root)
+		if err != nil {
+			ds.logger.Error("获取角色失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))
+		}
+		return nil
+	})
+
 	var images []string
-	item.Story, images, err = ds.GetItemStory(root)
-	if err != nil {
-		ds.logger.Error("获取故事失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))
-	}
-	links, err := ds.GetItemlink(root, id)
-	if err != nil {
-		ds.logger.Error("获取链接失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))
-	}
-	item.Links = append(item.Links, links...)
+	group.Go(func() error {
+		item.Story, images, err = ds.GetItemStory(root)
+		if err != nil {
+			ds.logger.Error("获取故事失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))
+		}
+		links, err := ds.GetItemlink(root, id)
+		if err != nil {
+			ds.logger.Error("获取链接失败", zap.String("scraper", ds.name), zap.String("uri", uri), zap.Error(err))
+		}
+		item.Links = append(item.Links, links...)
+		return nil
+	})
+
+	group.Wait()
 
 	cImageSet := tools.NewSet[string]()
 	for _, char := range item.Characters {
@@ -396,6 +417,7 @@ func (ds *DlSite) GetItemCharacter(node *goquery.Document) ([]handler.CharacterV
 	characters := []handler.CharacterVo{}
 	staff := []handler.StaffVo{}
 
+	imageUrls := []string{}
 	node.Find("div.c-productInfo__inner section.c-productContent").Each(func(i int, s *goquery.Selection) {
 		title := tools.TrimBlankChar(s.Find("h3.headline__title").Text())
 		if !slices.Contains([]string{"登場キャラクター", "登場人物"}, title) {
@@ -405,6 +427,9 @@ func (ds *DlSite) GetItemCharacter(node *goquery.Document) ([]handler.CharacterV
 			url := strings.TrimSpace(s.Find("picture img").AttrOr("src", ""))
 			if !strings.HasPrefix(url, "https:") {
 				url = "https:" + url
+			}
+			if url != "" {
+				imageUrls = append(imageUrls, url)
 			}
 			text, _ := s.Find("div.c-productContent__text").Html()
 			idx := strings.Index(text, "●")
@@ -448,6 +473,13 @@ func (ds *DlSite) GetItemCharacter(node *goquery.Document) ([]handler.CharacterV
 			characters = append(characters, character)
 		})
 	})
+
+	res := utils.SaveBunchTmpFile(func(uri string) ([]byte, error) {
+		return ds.DoReq(http.MethodGet, uri, nil, nil)
+	}, imageUrls)
+	for _, c := range characters {
+		c.Cover = strings.TrimPrefix(res[c.Cover], config.TmpDir)
+	}
 
 	return characters, staff, nil
 }

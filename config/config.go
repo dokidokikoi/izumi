@@ -15,10 +15,11 @@ var defaultConfig []byte
 var configIns *config
 
 type config struct {
-	PGConfig     c.PGConfig     `mapstructure:"postgresql"`
-	SqliteConfig c.SqliteConfig `mapstructure:"sqlite"`
-	LogConfig    c.LogConfig    `mapstructure:"log"`
-	AppConfig    c.AppConfig    `mapstructure:"app"`
+	PGConfig      c.PGConfig      `mapstructure:"postgresql"`
+	SqliteConfig  c.SqliteConfig  `mapstructure:"sqlite"`
+	LogConfig     c.LogConfig     `mapstructure:"log"`
+	AppConfig     c.AppConfig     `mapstructure:"app"`
+	ScraperConfig ScraperConfig   `mapstructure:"scraper"`
 }
 
 func SetConfig() {
